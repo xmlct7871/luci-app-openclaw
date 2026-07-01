@@ -102,8 +102,8 @@ find bin/ -name "luci-app-openclaw*.ipk"
 
 1. 打开 LuCI → 服务 → OpenClaw，点击「安装运行环境」
 2. 安装完成后服务会自动启动，点击「刷新页面」查看状态
-3. 进入「Web 控制台」添加 AI 模型和 API Key
-4. 进入「配置管理」可使用向导配置消息渠道
+3. 在「基本设置」点击「Web 控制台」添加 AI 模型和 API Key
+4. SSH 登录系统，运行 `openclaw config` 在终端配置消息渠道（QQ / Telegram / Discord 等）
 
 默认安装路径是 `/root/.openclaw`(与上游 OpenClaw 在 root 用户下的默认路径完全一致)。
 
@@ -154,7 +154,6 @@ luci-app-openclaw/
 │   ├── model/cbi/openclaw/basic.lua  # 主页面
 │   └── view/openclaw/
 │       ├── status.htm                # 状态面板
-│       ├── advanced.htm              # 配置管理（终端）
 │       ├── console.htm               # Web 控制台
 │       └── wechat.htm                # 微信渠道向导
 ├── root/
