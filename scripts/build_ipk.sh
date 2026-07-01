@@ -37,6 +37,15 @@ fi
 SRC="${1:-$DEFAULT_SRC}"
 OUT="${2:-$SRC/dist}"
 
+# 转绝对路径: cd 到 WORK 后, IPK_FILE 若仍是相对路径则无法写入
+# 这与 build_run.sh :11-14 处理方式一致
+SRC="$(cd "$SRC" 2>/dev/null && pwd || echo "$SRC")"
+if [ -d "$OUT" ]; then
+    OUT="$(cd "$OUT" 2>/dev/null && pwd || echo "$OUT")"
+else
+    OUT="$(cd "$(dirname "$OUT")" 2>/dev/null && pwd || echo "$(dirname "$OUT")")/$(basename "$OUT")"
+fi
+
 PKG_NAME="luci-app-openclaw"
 PKG_VERSION="2026.6.10"
 PKG_RELEASE="1"
@@ -232,7 +241,8 @@ echo "    ✓ 无 PAX 头污染"
 
 # ── 组合最终 IPK ─────────────────────────────────────────────────────────
 echo "==> 组合 $IPK_FILE"
-( cd "$WORK" && $TAR_CMD -c -z $TAR_OPTS -f "$IPK_FILE" \
+# 用 -C "$WORK" 代替 cd, 让 IPK_FILE 可以是任意路径(绝对或相对)
+( cd "$(dirname "$IPK_FILE")" && $TAR_CMD -c -z $TAR_OPTS -C "$WORK" -f "$(basename "$IPK_FILE")" \
     debian-binary control.tar.gz data.tar.gz )
 
 # ── 完成 ─────────────────────────────────────────────────────────────────
