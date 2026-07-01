@@ -97,6 +97,7 @@ function index()
 	-- 功能开关 (改为 true 即可恢复对应功能)
 	-- ═══════════════════════════════════════════
 	local ENABLE_WECHAT = false       -- 微信配置向导 + 微信插件管理 API
+	local ENABLE_ADVANCED = false    -- LuCI 「配置管理」页面 (替代: SSH `openclaw config`)
 	local ENABLE_LUCI_UPGRADE = false -- LuCI 插件在线升级 (不影响 OpenClaw 运行时升级,后者走 SSH: openclaw-env upgrade)
 
 	-- 主入口: 服务 → OpenClaw (🧠 作为菜单图标)
@@ -106,8 +107,10 @@ function index()
 	-- 基本设置 (CBI)
 	entry({"admin", "services", "openclaw", "basic"}, cbi("openclaw/basic"), _("基本设置"), 10).leaf = true
 
-	-- 配置管理 (View — 嵌入 oc-config Web 终端)
-	entry({"admin", "services", "openclaw", "advanced"}, template("openclaw/advanced"), _("配置管理"), 20).leaf = true
+	if ENABLE_ADVANCED then
+		-- 配置管理 (View — 嵌入 oc-config Web 终端)
+		entry({"admin", "services", "openclaw", "advanced"}, template("openclaw/advanced"), _("配置管理"), 20).leaf = true
+	end
 
 	if ENABLE_WECHAT then
 		-- 微信配置 (View — 微信渠道配置向导)
