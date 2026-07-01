@@ -681,10 +681,7 @@ guide.cfgvalue = function()
 	html[#html+1] = '② SSH 登录系统，使用系统命令 <b>openclaw config</b> 配置环境<br/>'
 	html[#html+1] = '③ 进入 <b>「Web 控制台」</b>，点击新窗口打开，直接开始对话。</span>'
 	html[#html+1] = '<div style="margin-top:10px;padding-top:10px;border-top:1px solid #d0e8ff;">'
-	html[#html+1] = '<span style="color:#888;">有疑问？请关注B站并留言：</span>'
-	html[#html+1] = '<a href="https://space.bilibili.com/59438380" target="_blank" rel="noopener" style="color:#00a1d6;font-weight:bold;text-decoration:none;">'
-	html[#html+1] = '🔗 space.bilibili.com/59438380</a>'
-	html[#html+1] = '<span style="margin-left:16px;color:#888;">GitHub 项目：</span>'
+	html[#html+1] = '<span style="color:#888;">GitHub 项目：</span>'
 	html[#html+1] = '<a href="https://github.com/xmlct7871/luci-app-openclaw" target="_blank" rel="noopener" style="color:#24292f;font-weight:bold;text-decoration:none;">'
 	html[#html+1] = '🐙 xmlct7871/luci-app-openclaw</a></div></div>'
 	return table.concat(html, "\n")
