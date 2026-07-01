@@ -48,7 +48,8 @@ jobs:
       - name: Build .ipk package
         run: |
           chmod +x scripts/build_ipk.sh
-          sh scripts/build_ipk.sh dist
+          # 第一个参数是 SRC_DIR(项目根)，不传则脚本自动定位
+          sh scripts/build_ipk.sh .
 
       - name: List outputs
         run: |
