@@ -2,7 +2,7 @@
 
 [![Bilibili](https://img.shields.io/badge/B%E7%AB%99-59438380-00a1d6?logo=bilibili)](https://space.bilibili.com/59438380)
 [![Blog](https://img.shields.io/badge/Blog-910501.xyz-orange)](https://blog.910501.xyz/)
-[![Build & Release](https://github.com/10000ge10000/luci-app-openclaw/actions/workflows/build.yml/badge.svg)](https://github.com/10000ge10000/luci-app-openclaw/actions/workflows/build.yml)
+[![Build & Release](https://github.com/xmlct7871/luci-app-openclaw/actions/workflows/build.yml/badge.svg)](https://github.com/xmlct7871/luci-app-openclaw/actions/workflows/build.yml)
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](LICENSE)
 
 [OpenClaw v2026.6.10](https://github.com/openclaw/openclaw/releases/tag/v2026.6.10) AI 网关的 OpenWrt LuCI 管理插件。
@@ -45,8 +45,8 @@
 
 ```bash
 # 下载最新版本（自动获取版本号）
-VER=$(curl -sI "https://github.com/10000ge10000/luci-app-openclaw/releases/latest" 2>/dev/null | grep -i "location:" | sed 's/.*tag\/v\{0,1\}//' | tr -d '\r\n')
-wget "https://github.com/10000ge10000/luci-app-openclaw/releases/download/v${VER}/luci-app-openclaw_${VER}.run"
+VER=$(curl -sI "https://github.com/xmlct7871/luci-app-openclaw/releases/latest" 2>/dev/null | grep -i "location:" | sed 's/.*tag\/v\{0,1\}//' | tr -d '\r\n')
+wget "https://github.com/xmlct7871/luci-app-openclaw/releases/download/v${VER}/luci-app-openclaw_${VER}.run"
 sh "luci-app-openclaw_${VER}.run"
 ```
 
@@ -54,8 +54,8 @@ sh "luci-app-openclaw_${VER}.run"
 
 ```bash
 # 下载最新版本（自动获取版本号）
-VER=$(curl -sI "https://github.com/10000ge10000/luci-app-openclaw/releases/latest" 2>/dev/null | grep -i "location:" | sed 's/.*tag\/v\{0,1\}//' | tr -d '\r\n')
-wget "https://github.com/10000ge10000/luci-app-openclaw/releases/download/v${VER}/luci-app-openclaw_${VER}-1_all.ipk"
+VER=$(curl -sI "https://github.com/xmlct7871/luci-app-openclaw/releases/latest" 2>/dev/null | grep -i "location:" | sed 's/.*tag\/v\{0,1\}//' | tr -d '\r\n')
+wget "https://github.com/xmlct7871/luci-app-openclaw/releases/download/v${VER}/luci-app-openclaw_${VER}-1_all.ipk"
 opkg install "luci-app-openclaw_${VER}-1_all.ipk"
 ```
 
@@ -67,7 +67,7 @@ opkg install "luci-app-openclaw_${VER}-1_all.ipk"
 cd /path/to/openwrt
 
 # 添加 feeds
-echo "src-git openclaw https://github.com/10000ge10000/luci-app-openclaw.git" >> feeds.conf.default
+echo "src-git openclaw https://github.com/xmlct7871/luci-app-openclaw.git" >> feeds.conf.default
 
 # 更新安装
 ./scripts/feeds update -a
@@ -84,7 +84,7 @@ make package/luci-app-openclaw/compile V=s
 使用 OpenWrt SDK 单独编译：
 
 ```bash
-git clone https://github.com/10000ge10000/luci-app-openclaw.git package/luci-app-openclaw
+git clone https://github.com/xmlct7871/luci-app-openclaw.git package/luci-app-openclaw
 make defconfig
 make package/luci-app-openclaw/compile V=s
 find bin/ -name "luci-app-openclaw*.ipk"
