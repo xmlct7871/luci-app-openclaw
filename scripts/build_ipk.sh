@@ -163,11 +163,11 @@ Depends: luci-compat, luci-base, curl, openssl-util, script-utils, tar, libstdcp
 License: GPL-3.0
 Section: luci
 Architecture: ${PKG_ARCH}
-Maintainer: 10000ge10000 <10000ge10000@users.noreply.github.com>
+Maintainer: xmlct7871 <xmlct787@gmail.com>
 Source: feed/luci-app-openclaw
 SourceName: ${PKG_NAME}
 SourceDateEpoch: 1748582400
-URL: https://github.com/10000ge10000/luci-app-openclaw
+URL: https://github.com/xmlct7871/luci-app-openclaw
 Installed-Size: $(du -sk "$DATA" 2>/dev/null | awk '{print $1}')
 Description: OpenClaw AI Gateway LuCI management plugin (v2026.6.10).
  Compatible with upstream OpenClaw v2026.6.10 native layout

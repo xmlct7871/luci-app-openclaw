@@ -393,7 +393,7 @@ act.cfgvalue = function(self, section)
 	html[#html+1] = 'notesHtml="<div style=\\"margin:12px 0;border:1px solid #d0d7de;border-radius:10px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.06);\\"><div style=\\"background:linear-gradient(135deg,#f6f8fa 0%,#ffffff 100%);padding:12px 16px;border-bottom:1px solid #d0d7de;display:flex;align-items:center;justify-content:space-between;\\"><span style=\\"font-size:14px;font-weight:600;color:#24292f;\\">📋 更新日志</span><span style=\\"display:inline-flex;align-items:center;padding:2px 10px;border-radius:12px;font-size:12px;font-weight:600;background:linear-gradient(135deg,#e3f2fd 0%,#bbdefb 100%);color:#1565c0;border:1px solid #64b5f6;\\">v"+r.plugin_latest+"</span></div><div style=\\"padding:16px;max-height:450px;overflow-y:auto;background:#fff;\\">"+rendered+"</div></div>";'
 	html[#html+1] = '}'
 	-- 操作按钮区: 分组设计
-	html[#html+1] = 'act.innerHTML=notesHtml+"<div style=\\"margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;\\"><button class=\\"btn cbi-button cbi-button-apply\\" type=\\"button\\" onclick=\\"ocPluginUpgrade()\\" id=\\"btn-plugin-upgrade\\" style=\\"box-shadow:0 2px 4px rgba(0,0,0,0.1);\\">⬆️ 一键升级 v"+r.plugin_latest+"</button><a href=\\"https://github.com/10000ge10000/luci-app-openclaw/releases/latest\\" target=\\"_blank\\" rel=\\"noopener\\" class=\\"btn cbi-button cbi-button-action\\" style=\\"text-decoration:none;\\">📥 GitHub 下载</a></div>";'
+	html[#html+1] = 'act.innerHTML=notesHtml+"<div style=\\"margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;\\"><button class=\\"btn cbi-button cbi-button-apply\\" type=\\"button\\" onclick=\\"ocPluginUpgrade()\\" id=\\"btn-plugin-upgrade\\" style=\\"box-shadow:0 2px 4px rgba(0,0,0,0.1);\\">⬆️ 一键升级 v"+r.plugin_latest+"</button><a href=\\"https://github.com/xmlct7871/luci-app-openclaw/releases/latest\\" target=\\"_blank\\" rel=\\"noopener\\" class=\\"btn cbi-button cbi-button-action\\" style=\\"text-decoration:none;\\">📥 GitHub 下载</a></div>";'
 	html[#html+1] = '}'
 	html[#html+1] = '}catch(e){el.innerHTML="<span style=\\"color:red\\">❌ 检测失败</span>";}'
 	html[#html+1] = '});}'
@@ -685,8 +685,8 @@ guide.cfgvalue = function()
 	html[#html+1] = '<a href="https://space.bilibili.com/59438380" target="_blank" rel="noopener" style="color:#00a1d6;font-weight:bold;text-decoration:none;">'
 	html[#html+1] = '🔗 space.bilibili.com/59438380</a>'
 	html[#html+1] = '<span style="margin-left:16px;color:#888;">GitHub 项目：</span>'
-	html[#html+1] = '<a href="https://github.com/10000ge10000/luci-app-openclaw" target="_blank" rel="noopener" style="color:#24292f;font-weight:bold;text-decoration:none;">'
-	html[#html+1] = '🐙 10000ge10000/luci-app-openclaw</a></div></div>'
+	html[#html+1] = '<a href="https://github.com/xmlct7871/luci-app-openclaw" target="_blank" rel="noopener" style="color:#24292f;font-weight:bold;text-decoration:none;">'
+	html[#html+1] = '🐙 xmlct7871/luci-app-openclaw</a></div></div>'
 	return table.concat(html, "\n")
 end
 

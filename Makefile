@@ -9,7 +9,7 @@ PKG_NAME:=luci-app-openclaw
 PKG_VERSION:=$(strip $(shell cat $(CURDIR)/VERSION 2>/dev/null || echo "1.0.0"))
 PKG_RELEASE:=1
 
-PKG_MAINTAINER:=10000ge10000 <10000ge10000@users.noreply.github.com>
+PKG_MAINTAINER:=xmlct7871 <xmlct787@gmail.com>
 PKG_LICENSE:=GPL-3.0
 
 LUCI_TITLE:=OpenClaw AI 网关 LuCI 管理插件
