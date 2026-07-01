@@ -1,0 +1,64 @@
+name: Build IPK
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号 (留空则读取 VERSION 文件)'
+        required: false
+        type: string
+        default: ''
+
+jobs:
+  build-ipk:
+    name: Build IPK package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Determine version
+        id: version
+        run: |
+          INPUT_VER="${{ github.event.inputs.version }}"
+          if [ "${{ github.event_name }}" = "push" ] && [ -n "${GITHUB_REF_NAME}" ]; then
+            VER="${GITHUB_REF_NAME#v}"
+          elif [ -n "$INPUT_VER" ]; then
+            VER="$INPUT_VER"
+          elif [ -f VERSION ]; then
+            VER="$(cat VERSION | tr -d '[:space:]')"
+          else
+            VER="$(date -u +%Y.%m.%d)"
+          fi
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VER" >> "$GITHUB_OUTPUT"
+          echo "Version: $VER"
+
+      - name: Inject version
+        run: |
+          VER="${{ steps.version.outputs.version }}"
+          echo "$VER" > VERSION
+          sed -i "s/^PKG_VERSION:=.*/PKG_VERSION:=$VER/" Makefile
+
+      - name: Build .ipk package
+        run: |
+          chmod +x scripts/build_ipk.sh
+          sh scripts/build_ipk.sh dist
+
+      - name: List outputs
+        run: |
+          echo "=== Build artifacts ==="
+          ls -lh dist/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: luci-app-openclaw-${{ steps.version.outputs.version }}
+          path: dist/*.ipk
+          retention-days: 30
+          compression-level: 0

@@ -1,0 +1,880 @@
+#!/bin/sh /etc/rc.common
+# luci-app-openclaw — procd init 脚本
+
+USE_PROCD=1
+START=99
+STOP=10
+
+EXTRA_COMMANDS="setup status_service restart_gateway"
+EXTRA_HELP="    setup            下载 Node.js 并安装 OpenClaw
+        status_service   显示服务状态
+        restart_gateway  仅重启 Gateway 实例 (不影响 Web PTY)"
+
+# ── 安装路径 (支持自定义) ──
+# v2026.6.10: install_path 直接就是 OpenClaw state dir
+# 默认值 /root/.openclaw 与 upstream OpenClaw 在 root 用户下的默认路径完全一致
+[ -r /usr/libexec/openclaw-paths.sh ] && . /usr/libexec/openclaw-paths.sh
+[ -r /usr/libexec/openclaw-node.sh ] && . /usr/libexec/openclaw-node.sh
+OC_NODE_MIN_VERSION="${OC_NODE_MIN_VERSION:-22.19.0}"
+OC_CONFIGURED_PATH="$(uci -q get openclaw.main.install_path 2>/dev/null || echo '/root/.openclaw')"
+if command -v oc_load_paths >/dev/null 2>&1; then
+	if ! oc_load_paths "$OC_CONFIGURED_PATH"; then
+		logger -t openclaw "安装路径无效: $OC_CONFIGURED_PATH"
+		OC_BASE_PATH="/root/.openclaw"
+		OC_INSTALL_PATH="/root/.openclaw"
+		OC_DATA="/root/.openclaw"
+		NODE_BASE="${OC_INSTALL_PATH}/node"
+		NPM_LIB="${NODE_BASE}/lib/node_modules"
+		CONFIG_FILE="${OC_INSTALL_PATH}/openclaw.json"
+	else
+		OC_BASE_PATH="$STATE_DIR"
+		OC_INSTALL_PATH="$STATE_DIR"
+		OC_DATA="$STATE_DIR"
+	fi
+else
+	OC_BASE_PATH="${OC_CONFIGURED_PATH%/}"
+	OC_INSTALL_PATH="$OC_BASE_PATH"
+	OC_DATA="$OC_BASE_PATH"
+	NODE_BASE="${OC_INSTALL_PATH}/node"
+	NPM_LIB="${NODE_BASE}/lib/node_modules"
+	CONFIG_FILE="${OC_INSTALL_PATH}/openclaw.json"
+fi
+
+# ── OverlayFS 兼容性修复 ──
+# Docker bind mount 可能导致 /root 或 /opt 不可写
+# 解决: bind mount upper 层到合并视图
+# v2026.6.10: 同时支持 /root 和 /opt 两种 base
+_oc_fix_overlay() {
+	local overlay_src
+	case "$OC_BASE_PATH" in
+		/root|/root/*) overlay_src="/overlay/upper/root" ;;
+		/opt|/opt/*) overlay_src="/overlay/upper/opt" ;;
+		*) return 0 ;;
+	esac
+
+	mkdir -p "${OC_BASE_PATH}/.probe-$$" 2>/dev/null && { rmdir "${OC_BASE_PATH}/.probe-$$" 2>/dev/null; return 0; }
+	if [ -d "/overlay/upper" ]; then
+		mkdir -p "$overlay_src" 2>/dev/null
+		mount --bind "$overlay_src" "$OC_BASE_PATH" 2>/dev/null && return 0
+	fi
+	return 1
+}
+_oc_fix_overlay
+
+NODE_BIN="${NODE_BASE}/bin/node"
+CONFIG_FILE="${OC_DATA}/openclaw.json"
+
+get_oc_entry() {
+# v2026.6.10: 用 NPM_LIB 替代 OC_GLOBAL(扁平化布局,统一在 ${NODE_BASE}/lib/node_modules)
+local search_dirs="${NPM_LIB}/openclaw
+${NODE_BASE}/lib/node_modules/openclaw"
+
+# pnpm 全局安装路径形如: $NPM_LIB/5/openclaw
+for ver_dir in "${NPM_LIB}"/*/openclaw; do
+[ -d "$ver_dir" ] && search_dirs="$search_dirs
+$ver_dir"
+done
+
+# v2026.3.8: 跟随符号链接解析真实包路径 (pnpm store / symlinked wrappers)
+for link_dir in "${NPM_LIB}/openclaw"; do
+	[ -L "$link_dir" ] && {
+		local real_dir=$(readlink -f "$link_dir" 2>/dev/null)
+		[ -n "$real_dir" ] && [ -d "$real_dir" ] && search_dirs="$search_dirs
+$real_dir"
+	}
+done
+
+local d _tmpf
+_tmpf=$(mktemp)
+echo "$search_dirs" > "$_tmpf"
+while read -r d; do
+[ -z "$d" ] && continue
+if [ -f "${d}/openclaw.mjs" ]; then
+echo "${d}/openclaw.mjs"
+rm -f "$_tmpf"
+return
+elif [ -f "${d}/dist/cli.js" ]; then
+echo "${d}/dist/cli.js"
+rm -f "$_tmpf"
+return
+fi
+done < "$_tmpf"
+rm -f "$_tmpf"
+}
+
+patch_iframe_headers() {
+# 移除 OpenClaw 网关的 X-Frame-Options 和 frame-ancestors 限制，允许 LuCI iframe 嵌入
+# v2026.4.x: 安全头设置迁移到 server.impl-*.js 文件
+local patched=0
+
+# 1. 搜索 server.impl-*.js (v2026.4.x 新位置)
+# v2026.6.10: 用 NPM_LIB 替代 OC_GLOBAL
+for f in $(find "${NPM_LIB}/openclaw/dist" -name "server.impl-*.js" -type f 2>/dev/null); do
+	if grep -q "X-Frame-Options.*DENY\|frame-ancestors.*none" "$f" 2>/dev/null; then
+		sed -i 's|res\.setHeader("X-Frame-Options", "DENY")|res.setHeader("X-Frame-Options", "ALLOW-FROM *") // patched by luci-app-openclaw|g' "$f"
+		sed -i "s|\"frame-ancestors 'none'\"|\"frame-ancestors *\"|g" "$f"
+		logger -t openclaw "Patched iframe headers in $f"
+		patched=1
+	fi
+done
+
+# 2. 兼容旧版本: 搜索 gateway-cli-*.js (v2026.3.x)
+# v2026.6.10: 用 NPM_LIB 替代 OC_GLOBAL
+for search_root in "${NPM_LIB}" "${NODE_BASE}/lib"; do
+	[ -d "$search_root" ] || continue
+	for f in $(find "$search_root" -name "gateway-cli-*.js" -type f 2>/dev/null); do
+		if grep -q "X-Frame-Options.*DENY" "$f" 2>/dev/null; then
+			sed -i "s|res.setHeader(\"X-Frame-Options\", \"DENY\");|// res.setHeader(\"X-Frame-Options\", \"DENY\"); // patched by luci-app-openclaw|g" "$f"
+			sed -i "s|\"frame-ancestors 'none'\"|\"frame-ancestors *\"|g" "$f"
+			logger -t openclaw "Patched iframe headers in $f"
+			patched=1
+		fi
+	done
+done
+
+[ $patched -eq 1 ] && logger -t openclaw "iframe headers patched successfully"
+}
+
+sync_uci_to_json() {
+# 将 UCI 配置同步到 openclaw.json，同时确保 token 双向同步
+local port bind token json_token
+port=$(uci -q get openclaw.main.port || echo "18789")
+bind=$(uci -q get openclaw.main.bind || echo "lan")
+token=$(uci -q get openclaw.main.token || echo "")
+
+# 确保配置目录和文件存在 (路径已在脚本开头做 OverlayFS 重映射)
+mkdir -p "$(dirname "$CONFIG_FILE")" 2>/dev/null
+if [ ! -f "$CONFIG_FILE" ]; then
+echo '{}' > "$CONFIG_FILE"
+fi
+
+# 尝试从 JSON 读取 token (用于双向同步检测)
+if [ -x "$NODE_BIN" ]; then
+	json_token=$("$NODE_BIN" -e "
+try{const d=JSON.parse(require('fs').readFileSync('${CONFIG_FILE}','utf8'));
+if(d.gateway&&d.gateway.auth&&d.gateway.auth.token)process.stdout.write(d.gateway.auth.token);}catch(e){}
+" 2>/dev/null)
+fi
+
+# v2026.4.10: 双向同步策略 - JSON 中的 token 优先
+# 原因: doctor --fix 或其他操作可能修改 JSON 中的 token
+# 如果 JSON 有 token 且与 UCI 不同，以 JSON 为准
+if [ -n "$json_token" ] && [ "$json_token" != "$token" ]; then
+	token="$json_token"
+	logger -t openclaw "Token 同步: JSON -> UCI"
+fi
+
+# UCI 和 JSON 都没有 token 时，生成一个新的
+if [ -z "$token" ]; then
+	token=$(head -c 24 /dev/urandom | hexdump -e '24/1 "%02x"' 2>/dev/null || openssl rand -hex 24 2>/dev/null || dd if=/dev/urandom bs=24 count=1 2>/dev/null | od -An -tx1 | tr -d ' \n' | head -c 48)
+	logger -t openclaw "Token 生成: 新 token"
+fi
+
+# 如果仍然没有 token，生成一个新的
+if [ -z "$token" ]; then
+	token=$(head -c 24 /dev/urandom | hexdump -e '24/1 "%02x"' 2>/dev/null || openssl rand -hex 24 2>/dev/null || dd if=/dev/urandom bs=24 count=1 2>/dev/null | od -An -tx1 | tr -d ' \n' | head -c 48)
+fi
+
+# 确保 token 写回 UCI
+local uci_token
+uci_token=$(uci -q get openclaw.main.token || echo "")
+if [ "$uci_token" != "$token" ]; then
+	uci set openclaw.main.token="$token"
+	uci commit openclaw 2>/dev/null
+fi
+
+# 使用 Node.js 写入 JSON (如果可用)
+if [ -x "$NODE_BIN" ]; then
+OC_SYNC_PORT="$port" OC_SYNC_BIND="$bind" OC_SYNC_TOKEN="$token" OC_SYNC_FILE="$CONFIG_FILE" \
+"$NODE_BIN" -e "
+const fs=require('fs');
+const f=process.env.OC_SYNC_FILE;
+let d={};
+try{d=JSON.parse(fs.readFileSync(f,'utf8'));}catch(e){}
+if(!d.gateway)d.gateway={};
+d.gateway.port=parseInt(process.env.OC_SYNC_PORT)||18789;
+d.gateway.bind=process.env.OC_SYNC_BIND||'lan';
+d.gateway.mode='local';
+if(!d.gateway.auth)d.gateway.auth={};
+d.gateway.auth.mode='token';
+d.gateway.auth.token=process.env.OC_SYNC_TOKEN||'';
+if(!d.gateway.controlUi)d.gateway.controlUi={};
+d.gateway.controlUi.allowInsecureAuth=true;
+d.gateway.controlUi.dangerouslyDisableDeviceAuth=true;
+d.gateway.controlUi.dangerouslyAllowHostHeaderOriginFallback=true;
+// 清理 v2026.3.1+ 已废弃的字段，避免配置验证失败
+delete d.gateway.name;
+delete d.gateway.bonjour;
+delete d.gateway.plugins;
+// v2026.3.2: 禁用 ACP dispatch 防止路由器内存溢出
+if(!d.acp)d.acp={};
+if(!d.acp.dispatch)d.acp.dispatch={};
+d.acp.dispatch.enabled=false;
+// v2026.3.2: tools.profile 默认改为 messaging，路由器场景需强制 coding
+if(!d.tools)d.tools={};
+d.tools.profile='coding';
+// 禁用 OpenClaw 内置更新检查，防止 Control UI 显示升级横幅
+if(!d.update)d.update={};
+d.update.checkOnStart=false;
+// v2026.3.2: 迁移 Ollama provider 到原生 API
+if(d.models&&d.models.providers&&d.models.providers.ollama){const ol=d.models.providers.ollama;if(ol.api==='openai-chat-completions'||ol.api==='openai-completions')ol.api='ollama';if(ol.baseUrl&&ol.baseUrl.endsWith('/v1'))ol.baseUrl=ol.baseUrl.replace(/\/v1$/,'');if(ol.apiKey==='ollama')ol.apiKey='ollama-local';}
+// v2026.3.7: 清理已废弃的顶层配置键 (loadConfig() 现在会严格校验)
+['cli','commands.native','commands.nativeSkills','commands.ownerDisplay'].forEach(k=>{const ks=k.split('.');let o=d;for(let i=0;i<ks.length-1;i++){if(!o[ks[i]])return;o=o[ks[i]];}delete o[ks[ks.length-1]];});
+// v2026.4.5: 清理已废弃的配置别名 (BREAKING CHANGE)
+// 1. talk.* 命名空间废弃 (voiceId, apiKey)
+if(d.talk){delete d.talk.voiceId;delete d.talk.apiKey;}
+// 2. browser.ssrfPolicy.allowPrivateNetwork 废弃
+if(d.browser&&d.browser.ssrfPolicy){delete d.browser.ssrfPolicy.allowPrivateNetwork;}
+// 3. hooks.internal.handlers 废弃
+if(d.hooks&&d.hooks.internal){delete d.hooks.internal.handlers;}
+// 4. channel/group/room 的 allow 字段迁移到 enabled
+['channel','group','room'].forEach(k=>{if(d[k]){Object.keys(d[k]).forEach(id=>{if(d[k][id]&&typeof d[k][id].allow!=='undefined'){d[k][id].enabled=d[k][id].allow;delete d[k][id].allow;}});}});
+// 5. agents.defaults.cliBackends 废弃
+if(d.agents&&d.agents.defaults){delete d.agents.defaults.cliBackends;}
+// v2026.4.9: 自动同步 plugins.allow (解决 "plugins.allow is empty" 警告)
+// 扫描已安装的插件并添加到 allow 列表
+if(!d.plugins)d.plugins={};
+if(!Array.isArray(d.plugins.allow))d.plugins.allow=[];
+// 从 plugins.installs 中提取已安装插件
+// 注意: 使用 installPath 中的目录名作为插件 ID (与 openclaw.plugin.json 中的 id 一致)
+if(d.plugins.installs){
+	Object.keys(d.plugins.installs).forEach(key=>{
+		const inst=d.plugins.installs[key];
+		if(inst&&inst.installPath){
+			// 从 installPath 提取插件目录名 (如 openclaw-weixin)
+			const match=inst.installPath.match(/\/([^\/]+)\/?$/);
+			if(match&&match[1]&&!d.plugins.allow.includes(match[1])){
+				d.plugins.allow.push(match[1]);
+		}
+		}
+	});
+}
+// v2026.5.x: 微信插件渠道名统一为 openclaw-weixin
+// 旧配置里可能残留 weixin，启动前迁移，避免渠道加载失败。
+if(Array.isArray(d.plugins.allow)){
+	d.plugins.allow=d.plugins.allow.map(x=>x==='weixin'?'openclaw-weixin':x)
+		.filter((x,i,a)=>x&&a.indexOf(x)===i);
+}
+['entries','installs'].forEach(ns=>{
+	if(d.plugins&&d.plugins[ns]&&d.plugins[ns].weixin){
+		if(!d.plugins[ns]['openclaw-weixin'])d.plugins[ns]['openclaw-weixin']=d.plugins[ns].weixin;
+		delete d.plugins[ns].weixin;
+	}
+});
+if(d.plugins.entries&&d.plugins.entries['openclaw-weixin']){
+	delete d.plugins.entries['openclaw-weixin'];
+}
+['channel','channels'].forEach(ns=>{
+	if(d[ns]&&d[ns].weixin){
+		if(!d[ns]['openclaw-weixin'])d[ns]['openclaw-weixin']=d[ns].weixin;
+		delete d[ns].weixin;
+	}
+});
+if(!d.plugins.allow.includes('openclaw-weixin') && d.plugins.installs && d.plugins.installs['openclaw-weixin']){
+	d.plugins.allow.push('openclaw-weixin');
+}
+// 始终信任 copilot-proxy (内置插件)
+if(!d.plugins.allow.includes('copilot-proxy'))d.plugins.allow.push('copilot-proxy');
+fs.writeFileSync(f,JSON.stringify(d,null,2));
+" 2>/dev/null
+fi
+
+}
+
+start_service() {
+local enabled port bind pty_port
+config_load openclaw
+config_get enabled main enabled "0"
+config_get port main port "18789"
+config_get bind main bind "lan"
+config_get pty_port main pty_port "18793"
+
+[ "$enabled" = "1" ] || {
+echo "openclaw 已禁用。请在 /etc/config/openclaw 中设置 enabled 为 1"
+return 0
+}
+
+# 检查 Node.js
+if [ ! -x "$NODE_BIN" ]; then
+echo "未找到 Node.js: $NODE_BIN"
+echo "请运行: openclaw-env setup"
+return 1
+fi
+if command -v oc_assert_node_min_version >/dev/null 2>&1; then
+	oc_assert_node_min_version "$NODE_BIN" "$OC_NODE_MIN_VERSION" >/dev/null || {
+		echo "Node.js 版本过低，OpenClaw 需要 >= v${OC_NODE_MIN_VERSION}"
+		echo "请运行: openclaw-env node"
+		return 1
+	}
+fi
+
+# 检查 openclaw 入口
+local oc_entry
+oc_entry=$(get_oc_entry)
+if [ -z "$oc_entry" ]; then
+echo "OpenClaw 未安装。请运行: openclaw-env setup"
+return 1
+fi
+
+	# 同步 UCI 到 JSON
+	sync_uci_to_json
+
+	# v2026.3.13: 修复插件配置中的插件名称不匹配问题
+	# OpenClaw 加强了配置验证，plugins.allow 中的名称必须与实际插件名完全匹配
+	# 问题: 旧版本写入的是 "openclaw-qqbot"，但实际插件名是 "@tencent-connect/openclaw-qqbot"
+	fix_plugin_config() {
+		local qqbot_ext_dir="${OC_DATA}/extensions/openclaw-qqbot"
+		[ ! -d "$qqbot_ext_dir" ] && return
+		[ ! -f "$CONFIG_FILE" ] && return
+		
+		"$NODE_BIN" -e "
+			const fs=require('fs');
+			try{
+				const d=JSON.parse(fs.readFileSync('${CONFIG_FILE}','utf8'));
+				if(!d.plugins)d.plugins={};
+				let modified=false;
+				
+				// 修复 plugins.allow 数组中的插件名称
+				if(Array.isArray(d.plugins.allow)){
+					const oldName='openclaw-qqbot';
+					const newName='@tencent-connect/openclaw-qqbot';
+					const idx=d.plugins.allow.indexOf(oldName);
+					if(idx!==-1){
+						if(!d.plugins.allow.includes(newName)){
+							d.plugins.allow[idx]=newName;
+							modified=true;
+					}else{
+							d.plugins.allow.splice(idx,1);
+							modified=true;
+					}
+				}
+			}
+				
+				// 同时修复 plugins.entries 中的键名
+				if(d.plugins.entries && d.plugins.entries['openclaw-qqbot']){
+					if(!d.plugins.entries['@tencent-connect/openclaw-qqbot']){
+						d.plugins.entries['@tencent-connect/openclaw-qqbot']=d.plugins.entries['openclaw-qqbot'];
+				}
+					delete d.plugins.entries['openclaw-qqbot'];
+					modified=true;
+			}
+				
+				if(modified){
+					fs.writeFileSync('${CONFIG_FILE}',JSON.stringify(d,null,2));
+					console.log('FIXED');
+			}
+		}catch(e){}
+		" 2>/dev/null
+	}
+	fix_plugin_config
+
+	# 修复数据目录权限 (防止 root 用户操作后留下无法读取的文件)
+
+	# v2026.4.9: 修复插件目录权限 (OpenClaw 要求插件目录属主为 root)
+	# 详见: https://github.com/nicepkg/openclaw/releases/tag/v2026.4.9
+	# v2026.4.10 补充: 同时修复权限模式为 755，确保 Gateway 可读取插件
+	# 原因: npm/npx 以 root 创建目录时默认权限 700，其他用户无法读取
+	local ext_dir="${OC_DATA}/extensions"
+	local npm_projects_dir="${OC_DATA}/npm/projects"
+	local wechat_legacy_dir="${ext_dir}/openclaw-weixin"
+	local wechat_npm_plugin=""
+	if [ -d "$npm_projects_dir" ]; then
+		wechat_npm_plugin=$(find "$npm_projects_dir" -path "*/node_modules/@tencent-weixin/openclaw-weixin/openclaw.plugin.json" -type f 2>/dev/null | head -n 1)
+	fi
+	if [ -n "$wechat_npm_plugin" ] && [ -d "$wechat_legacy_dir" ]; then
+		local archive_root="${OC_DATA}/archived-extensions"
+		mkdir -p "$archive_root" 2>/dev/null || true
+		local archived_dir="${archive_root}/openclaw-weixin.legacy.$(date +%Y%m%d%H%M%S)"
+		mv "$wechat_legacy_dir" "$archived_dir" 2>/dev/null && logger -t openclaw "已归档旧微信扩展目录: $archived_dir"
+	fi
+	if [ -n "$wechat_npm_plugin" ] && [ -d "$ext_dir" ]; then
+		local archive_root="${OC_DATA}/archived-extensions"
+		mkdir -p "$archive_root" 2>/dev/null || true
+		for stale_dir in "$ext_dir"/openclaw-weixin.legacy.*; do
+			[ -d "$stale_dir" ] || continue
+			local stale_name="${stale_dir##*/}"
+			mv "$stale_dir" "${archive_root}/${stale_name}" 2>/dev/null || true
+		done
+	fi
+	if [ -d "$ext_dir" ]; then
+		chown -R root:root "$ext_dir" 2>/dev/null || true
+		chmod -R 755 "$ext_dir" 2>/dev/null || true
+	fi
+	if [ -d "$npm_projects_dir" ]; then
+		chown -R root:root "$npm_projects_dir" 2>/dev/null || true
+		chmod -R 755 "$npm_projects_dir" 2>/dev/null || true
+	fi
+
+	# v2026.4.x: 清理 jiti 缓存目录 (修复微信插件加载权限问题)
+	# jiti 编译 TypeScript 时会在 /tmp/jiti 创建缓存，如果由 root 创建则 openclaw 用户无法写入
+	rm -rf /tmp/jiti 2>/dev/null || true
+
+	# v2026.4.10: 优化配置迁移 - 只在版本变更时运行 doctor --fix
+	# 原因: doctor --fix 耗时 ~50 秒，每次重启都运行严重影响启动速度
+	# 策略: 使用标记文件记录已运行的版本，只在版本变化时才执行迁移
+	_run_config_migration() {
+		local oc_entry="$1"
+		[ -z "$oc_entry" ] && return
+
+		# 获取当前 OpenClaw 版本号 (只取数字版本，如 2026.4.9)
+		local current_ver=""
+		current_ver=$("$NODE_BIN" "$oc_entry" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+		[ -z "$current_ver" ] && current_ver="unknown"
+
+		# 检查标记文件
+		local version_marker="${OC_DATA}/.doctor_ran_version"
+		local last_ver=""
+		if [ -f "$version_marker" ]; then
+			last_ver=$(cat "$version_marker" 2>/dev/null | tr -d '[:space:]')
+		fi
+
+		# 只在版本变化时才运行 doctor --fix
+		if [ "$current_ver" != "$last_ver" ]; then
+			logger -t openclaw "检测到版本变更 ($last_ver -> $current_ver)，执行配置迁移 (doctor --fix)..."
+			OPENCLAW_HOME="$OC_DATA" OPENCLAW_CONFIG_PATH="$CONFIG_FILE" \
+				"$NODE_BIN" "$oc_entry" doctor --fix 2>/dev/null && \
+				logger -t openclaw "配置迁移完成" || \
+				logger -t openclaw "配置迁移失败，请手动检查"
+			# 更新标记文件
+			echo "$current_ver" > "$version_marker" 2>/dev/null
+		else
+			logger -t openclaw "版本未变化 ($current_ver)，跳过 doctor --fix"
+		fi
+	}
+	_run_config_migration "$oc_entry"
+
+	# doctor --fix 后再次修复权限 (防止 root 创建的文件导致 EACCES)
+	# 注意: extensions 目录保持 root 权限 (OpenClaw 安全要求)
+
+	# v2026.4.10: doctor --fix 后确保关键配置字段存在
+	# doctor --fix 可能会删除或遗漏某些必要字段，需要补充
+	_ensure_critical_config() {
+		[ ! -f "$CONFIG_FILE" ] && return
+		[ ! -x "$NODE_BIN" ] && return
+		"$NODE_BIN" -e "
+const fs = require('fs');
+const f = '${CONFIG_FILE}';
+let d = {};
+try { d = JSON.parse(fs.readFileSync(f, 'utf8')); } catch(e) {}
+
+// 确保 gateway.mode 存在
+if (!d.gateway) d.gateway = {};
+if (!d.gateway.mode) d.gateway.mode = 'local';
+
+// 确保端口和绑定配置
+if (!d.gateway.port) d.gateway.port = 18789;
+if (!d.gateway.bind) d.gateway.bind = 'lan';
+
+// 确保 controlUi 安全配置存在 (允许非 loopback 绑定和 LuCI iframe 嵌入)
+if (!d.gateway.controlUi) d.gateway.controlUi = {};
+if (d.gateway.controlUi.allowInsecureAuth !== true) d.gateway.controlUi.allowInsecureAuth = true;
+if (d.gateway.controlUi.dangerouslyDisableDeviceAuth !== true) d.gateway.controlUi.dangerouslyDisableDeviceAuth = true;
+if (d.gateway.controlUi.dangerouslyAllowHostHeaderOriginFallback !== true) d.gateway.controlUi.dangerouslyAllowHostHeaderOriginFallback = true;
+
+// 确保认证配置
+if (!d.gateway.auth) d.gateway.auth = {};
+if (!d.gateway.auth.mode) d.gateway.auth.mode = 'token';
+
+// 禁用 ACP dispatch (路由器内存有限)
+if (!d.acp) d.acp = {};
+if (!d.acp.dispatch) d.acp.dispatch = {};
+d.acp.dispatch.enabled = false;
+
+// 工具配置
+if (!d.tools) d.tools = {};
+d.tools.profile = 'coding';
+
+// 禁用更新检查
+if (!d.update) d.update = {};
+d.update.checkOnStart = false;
+
+fs.writeFileSync(f, JSON.stringify(d, null, 2));
+" 2>/dev/null
+	}
+	_ensure_critical_config
+
+		# v2026.4.10: doctor --fix 后再次同步 token (关键!)
+		# doctor --fix 可能修改了 JSON 中的 token，必须同步回 UCI
+		# 否则 LuCI 显示的 token 与 Gateway 实际使用的 token 不一致
+		_sync_token_after_doctor() {
+			[ ! -f "$CONFIG_FILE" ] && return
+			[ ! -x "$NODE_BIN" ] && return
+			local json_token uci_token
+			json_token=$("$NODE_BIN" -e "
+try{const d=JSON.parse(require('fs').readFileSync('${CONFIG_FILE}','utf8'));
+if(d.gateway&&d.gateway.auth&&d.gateway.auth.token)process.stdout.write(d.gateway.auth.token);}catch(e){}
+			" 2>/dev/null)
+			uci_token=$(uci -q get openclaw.main.token || echo "")
+
+			# JSON 有 token 且与 UCI 不同时，以 JSON 为准更新 UCI
+			if [ -n "$json_token" ] && [ "$json_token" != "$uci_token" ]; then
+				uci set openclaw.main.token="$json_token"
+				uci commit openclaw 2>/dev/null
+				logger -t openclaw "Token 同步 (doctor 后): JSON -> UCI"
+			fi
+		}
+		_sync_token_after_doctor
+
+		# v2026.4.10: 最终权限修复 - 确保 Gateway 启动前所有数据目录权限正确
+		# doctor --fix 或 _ensure_critical_config 可能创建新的目录/文件
+		# 关键: agents 目录下的 agent 子目录必须可被 openclaw 用户写入
+		# v2026.6.10 修正: 路径写错(应为 ${OC_DATA},不是 ${OC_DATA}/.openclaw),
+		#                且 find 缺 -exec,等于空操作;同时修复三处重复 chmod
+		find "${OC_DATA}" -user root \
+			! -path "${OC_DATA}/extensions*" \
+			! -path "${OC_DATA}/archived-extensions*" \
+			! -path "${OC_DATA}/npm/projects*" \
+			-exec chmod 755 {} + 2>/dev/null || true
+		# 特别确保 agents/main/agent 目录权限 (模型配置写入目录)
+		local agent_dir="${OC_DATA}/agents/main/agent"
+		if [ -d "$agent_dir" ]; then
+			chmod 755 "$agent_dir" 2>/dev/null || true
+		fi
+		# extensions 目录除外 - 必须保持 root 权限 (OpenClaw 安全要求)
+		# 同时修复权限模式为 755，确保 Gateway 可读取插件
+		if [ -d "${OC_DATA}/extensions" ]; then
+			chmod -R 755 "${OC_DATA}/extensions" 2>/dev/null || true
+		fi
+		if [ -d "${OC_DATA}/archived-extensions" ]; then
+			chmod -R 700 "${OC_DATA}/archived-extensions" 2>/dev/null || true
+		fi
+		if [ -d "${OC_DATA}/npm/projects" ]; then
+			chmod -R 755 "${OC_DATA}/npm/projects" 2>/dev/null || true
+		fi
+
+	# Patch iframe 安全头，允许 LuCI 嵌入
+	patch_iframe_headers
+
+# 将 UCI bind 映射到 openclaw gateway --bind 参数
+local gw_bind="loopback"
+case "$bind" in
+lan)      gw_bind="lan" ;;
+loopback) gw_bind="loopback" ;;
+all)      gw_bind="custom" ;;  # custom = 0.0.0.0
+*)        gw_bind="$bind" ;;
+esac
+
+# 确保网关端口未被残留进程占用 (防止 restart 时 crash loop)
+# v2026.3.14 优化: 快速轮询 + 批量 kill
+_ensure_port_free() {
+	local p="$1"
+	local i=0 max_wait=10  # 10 * 0.2 = 2 秒
+	
+	# 先检查端口是否已被占用
+	if command -v ss >/dev/null 2>&1; then
+		ss -tulnp 2>/dev/null | grep -q ":${p} " || return 0
+	else
+		netstat -tulnp 2>/dev/null | grep -q ":${p} " || return 0
+	fi
+	
+	# 端口被占用，尝试清理
+	for occ_pid in $(pgrep -f "openclaw-gateway" 2>/dev/null); do
+		kill "$occ_pid" 2>/dev/null
+	done
+	
+	while [ $i -lt $max_wait ]; do
+		if command -v ss >/dev/null 2>&1; then
+			ss -tulnp 2>/dev/null | grep -q ":${p} " || return 0
+		else
+			netstat -tulnp 2>/dev/null | grep -q ":${p} " || return 0
+		fi
+		usleep 200000 2>/dev/null || sleep 1
+		i=$((i + 1))
+	done
+	
+	# 最后手段: SIGKILL
+	local port_pid=""
+	if command -v ss >/dev/null 2>&1; then
+		port_pid=$(ss -tulnp 2>/dev/null | grep ":${p} " | sed -n 's/.*pid=\([0-9]*\).*/\1/p' | head -1)
+	else
+		port_pid=$(netstat -tulnp 2>/dev/null | grep ":${p} " | awk '{print $7}' | cut -d'/' -f1 | grep -E '^[0-9]+$' | head -n 1)
+	fi
+	[ -n "$port_pid" ] && kill -9 "$port_pid" 2>/dev/null && usleep 300000 2>/dev/null
+	return 0
+}
+_ensure_port_free "$port"
+
+# 启动 OpenClaw Gateway (主服务, 前台运行)
+	# v2026.4.7/4.9: 环境变量安全验证 (阻止危险变量注入)
+	_validate_path() {
+		local p="$1"
+		case "$p" in
+			*'$'*|*'`'*|*'|'*|*'&'*) return 1 ;;
+			/proc/*|/sys/*|/dev/*) return 1 ;;
+			*) return 0 ;;
+		esac
+	}
+	# v2026.6.10: 用 NPM_LIB + STATE_DIR 替代 OC_GLOBAL + OC_DATA
+	for _dir in "$NODE_BASE" "$NPM_LIB" "$STATE_DIR"; do
+		_validate_path "$_dir" || { logger -t openclaw "安全警告: 路径验证失败: $_dir"; return 1; }
+	done
+
+	procd_open_instance "gateway"
+	procd_set_param command "$NODE_BIN" "$oc_entry" gateway run \
+	--port "$port" --bind "$gw_bind"
+	# v2026.6.10: 显式设置 OpenClaw 上游 env var,避免 ~/.openclaw/ 解析歧义
+	procd_set_param env \
+	HOME="$OC_INSTALL_PATH" \
+	OPENCLAW_HOME="$OC_INSTALL_PATH" \
+	OPENCLAW_STATE_DIR="$OC_INSTALL_PATH" \
+	OPENCLAW_CONFIG_PATH="$CONFIG_FILE" \
+	NPM_CONFIG_CACHE="${OC_INSTALL_PATH}/.npm" \
+	TMPDIR="${OC_INSTALL_PATH}/.tmp" \
+	XDG_CACHE_HOME="${OC_INSTALL_PATH}/.cache" \
+	NODE_ICU_DATA="${NODE_BASE}/share/icu" \
+	NODE_BASE="$NODE_BASE" \
+	PATH="${NODE_BASE}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+	# v2026.6.10: 移除 procd_set_param user openclaw,以 root 跑(OpenWrt 惯例)
+	procd_set_param respawn 3600 10 5
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_set_param pidfile /var/run/openclaw.pid
+	procd_close_instance
+
+# 启动 Web PTY 配置终端 (辅助服务)
+# 复用已有 PTY token，只在不存在时才生成新的
+# 这样避免服务重启时 PTY WebSocket 连接因 token 变化而断开
+local pty_token
+pty_token=$(uci -q get openclaw.main.pty_token || echo "")
+if [ -z "$pty_token" ]; then
+	pty_token=$(head -c 16 /dev/urandom | hexdump -e '16/1 "%02x"' 2>/dev/null || openssl rand -hex 16 2>/dev/null || echo "pty_$(date +%s)")
+	uci set openclaw.main.pty_token="$pty_token"
+	uci commit openclaw 2>/dev/null
+fi
+
+procd_open_instance "pty"
+procd_set_param command "$NODE_BIN" /usr/share/openclaw/web-pty.js
+procd_set_param env \
+	OC_CONFIG_PORT="$pty_port" \
+	OC_PTY_TOKEN="$pty_token" \
+	OC_CONFIG_SCRIPT="/usr/share/openclaw/oc-config.sh" \
+	NODE_ICU_DATA="${NODE_BASE}/share/icu" \
+	NODE_BASE="$NODE_BASE" \
+	STATE_DIR="$OC_INSTALL_PATH" \
+	NPM_LIB="${NODE_BASE}/lib/node_modules" \
+	HOME="$OC_INSTALL_PATH" \
+	OPENCLAW_HOME="$OC_INSTALL_PATH" \
+	OPENCLAW_STATE_DIR="$OC_INSTALL_PATH" \
+	OPENCLAW_CONFIG_PATH="$CONFIG_FILE" \
+	PATH="${NODE_BASE}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+	procd_set_param respawn 3600 5 5
+procd_set_param stdout 1
+procd_set_param stderr 1
+procd_set_param pidfile /var/run/openclaw-pty.pid
+procd_close_instance
+}
+
+stop_service() {
+# procd 会自动停止它管理的主进程 (openclaw)
+# 但 openclaw 会 fork 出 openclaw-gateway 子进程实际监听端口
+# procd 不一定能正确追踪并杀掉子进程树，需要手动清理
+
+local port
+port=$(uci -q get openclaw.main.port || echo "18789")
+
+# v2026.3.14 优化: 快速终止进程树，减少等待时间
+# 1) 先获取所有相关 PID
+local gw_pids=""
+gw_pids=$(pgrep -f "openclaw-gateway" 2>/dev/null)
+gw_pids="$gw_pids $(pgrep -f "openclaw.*gateway.*run" 2>/dev/null)"
+
+# 2) 同时发送 SIGTERM 给所有进程
+for pid in $gw_pids; do
+	[ -n "$pid" ] && kill "$pid" 2>/dev/null
+done
+
+# 3) 快速轮询等待端口释放 (200ms 间隔，最多 3 秒)
+local wait_count=0
+local max_wait=15  # 15 * 0.2 = 3 秒
+while [ $wait_count -lt $max_wait ]; do
+	if command -v ss >/dev/null 2>&1; then
+		ss -tulnp 2>/dev/null | grep -q ":${port} " || break
+	else
+		netstat -tulnp 2>/dev/null | grep -q ":${port} " || break
+	fi
+	usleep 200000 2>/dev/null || sleep 1
+	wait_count=$((wait_count + 1))
+done
+
+# 4) 如果端口仍被占用，强制 SIGKILL
+if [ $wait_count -ge $max_wait ]; then
+        local port_pid=""
+        if command -v ss >/dev/null 2>&1; then
+                port_pid=$(ss -tulnp 2>/dev/null | grep ":${port} " | sed -n 's/.*pid=\([0-9]*\).*/\1/p' | head -1)
+        else
+                port_pid=$(netstat -tulnp 2>/dev/null | grep ":${port} " | awk '{print $7}' | cut -d'/' -f1 | grep -E '^[0-9]+$' | head -n 1)
+        fi
+        if [ -n "$port_pid" ]; then
+                kill -9 "$port_pid" 2>/dev/null
+                # 等待内核回收 (缩短到 0.5 秒)
+                usleep 500000 2>/dev/null || sleep 1
+        fi
+fi
+
+# 5) 终极保险：使用暴力匹配端口杀死该名下任何相关占用进程
+local _pty_port=$(uci -q get openclaw.main.pty_port || echo "18793")
+for _p in "$port" "$_pty_port"; do
+        local _spid=""
+        if command -v ss >/dev/null 2>&1; then
+                _spid=$(ss -tulnp 2>/dev/null | grep ":${_p} " | sed -n 's/.*pid=\([0-9]*\).*/\1/p' | head -1)
+        else
+                _spid=$(netstat -tulnp 2>/dev/null | grep ":${_p} " | awk '{print $7}' | cut -d'/' -f1 | grep -E '^[0-9]+$' | head -n 1)
+        fi
+        [ -n "$_spid" ] && kill -9 "$_spid" 2>/dev/null || true
+done
+
+# 6) v2026.6.10: 清理 openclaw 相关进程(以 root 跑,不再按 openclaw 用户过滤)
+for _opcpid in $(pgrep -f "openclaw-gateway\|web-pty.js" 2>/dev/null); do
+	kill -9 "$_opcpid" 2>/dev/null || true
+done
+}
+
+service_triggers() {
+procd_add_reload_trigger "openclaw"
+
+}
+
+reload_service() {
+stop
+# v2026.3.14: stop_service 已优化等待逻辑，缩短额外等待时间
+usleep 300000 2>/dev/null || sleep 1
+start
+}
+
+setup() {
+echo "正在调用 openclaw-env setup..."
+/usr/bin/openclaw-env setup
+}
+
+restart_gateway() {
+# 仅重启 Gateway 进程，通过 kill 触发 procd respawn
+# 绝对不能调用 start_service，否则会重启 PTY 实例
+
+local port
+port=$(uci -q get openclaw.main.port || echo "18789")
+
+# v2026.3.14 优化: 快速终止并重启
+# 1) 同时获取端口 PID 和 procd 管理的 PID
+local port_pid="" gw_pid=""
+if command -v ss >/dev/null 2>&1; then
+	port_pid=$(ss -tulnp 2>/dev/null | grep ":${port} " | sed -n 's/.*pid=\([0-9]*\).*/\1/p' | head -1)
+else
+	port_pid=$(netstat -tulnp 2>/dev/null | grep ":${port} " | sed -n 's|.* \([0-9]*\)/.*|\1|p' | head -1)
+fi
+gw_pid=$(ubus call service list '{"name":"openclaw"}' 2>/dev/null | \
+	jsonfilter -e '$.openclaw.instances.gateway.pid' 2>/dev/null) || true
+
+# 2) 同时发送 SIGTERM 给所有相关进程
+[ -n "$port_pid" ] && kill "$port_pid" 2>/dev/null
+[ -n "$gw_pid" ] && kill -0 "$gw_pid" 2>/dev/null && kill "$gw_pid" 2>/dev/null
+
+# 3) 兜底: kill 所有残留进程
+for pid in $(pgrep -f "openclaw-gateway" 2>/dev/null) $(pgrep -f "openclaw.*gateway.*run" 2>/dev/null); do
+	kill "$pid" 2>/dev/null
+done
+
+# 4) 快速轮询等待端口释放 (200ms 间隔，最多 2 秒)
+local wait_count=0
+while [ $wait_count -lt 10 ]; do
+	if command -v ss >/dev/null 2>&1; then
+		ss -tulnp 2>/dev/null | grep -q ":${port} " || break
+	else
+		netstat -tulnp 2>/dev/null | grep -q ":${port} " || break
+	fi
+	usleep 200000 2>/dev/null || sleep 1
+	wait_count=$((wait_count + 1))
+done
+
+# 5) 如果端口仍被占用，强制 SIGKILL
+if [ $wait_count -ge 10 ]; then
+	[ -n "$port_pid" ] && kill -9 "$port_pid" 2>/dev/null
+	usleep 300000 2>/dev/null || sleep 1
+fi
+
+# 6) 如果 procd 中没有 gateway 服务注册，调用 start
+if [ -z "$gw_pid" ]; then
+	/etc/init.d/openclaw start >/dev/null 2>&1
+fi
+# 如果 gw_pid 存在，procd respawn 会自动重启 gateway
+}
+
+status_service() {
+local port pty_port
+port=$(uci -q get openclaw.main.port || echo "18789")
+pty_port=$(uci -q get openclaw.main.pty_port || echo "18793")
+
+echo "=== OpenClaw 服务状态 ==="
+
+# Node.js
+if [ -x "$NODE_BIN" ]; then
+echo "Node.js:  $($NODE_BIN --version 2>/dev/null)"
+else
+echo "Node.js:  未安装"
+fi
+
+# OpenClaw
+local oc_entry
+oc_entry=$(get_oc_entry)
+if [ -n "$oc_entry" ]; then
+local ver
+ver=$("$NODE_BIN" "$oc_entry" --version 2>/dev/null | tr -d '[:space:]')
+echo "OpenClaw: v${ver:-未知}"
+else
+echo "OpenClaw: 未安装"
+fi
+
+# 端口检测函数 (ss 优先, 回退 netstat)
+_check_port() {
+	local p="$1"
+	if command -v ss >/dev/null 2>&1; then
+		ss -tulnp 2>/dev/null | grep -q ":${p} "
+	else
+		netstat -tulnp 2>/dev/null | grep -q ":${p} "
+	fi
+}
+
+_get_pid_by_port() {
+	local p="$1"
+	if command -v ss >/dev/null 2>&1; then
+		ss -tulnp 2>/dev/null | grep ":${p} " | head -1 | sed -n 's/.*pid=\([0-9]*\).*/\1/p'
+	else
+		netstat -tulnp 2>/dev/null | grep ":${p} " | head -1 | sed 's|.* \([0-9]*\)/.*|\1|'
+	fi
+}
+
+# Gateway port
+if _check_port "$port"; then
+echo "网关:     运行中 (端口 $port)"
+# PID
+local pid
+pid=$(_get_pid_by_port "$port")
+if [ -n "$pid" ]; then
+echo "进程ID:   $pid"
+# Memory
+local rss
+rss=$(awk '/VmRSS/{print $2}' /proc/$pid/status 2>/dev/null)
+[ -n "$rss" ] && echo "内存:     ${rss} kB"
+# Uptime
+local start_time now_time
+start_time=$(stat -c %Y /proc/$pid 2>/dev/null || echo "0")
+now_time=$(date +%s)
+if [ "$start_time" -gt 0 ]; then
+local uptime=$((now_time - start_time))
+local hours=$((uptime / 3600))
+local mins=$(( (uptime % 3600) / 60 ))
+echo "运行时间: ${hours}小时 ${mins}分钟"
+fi
+fi
+elif pgrep -f "openclaw.*gateway" >/dev/null 2>&1; then
+echo "网关:     正在启动 (首次启动可能需要 2~5 分钟)"
+else
+echo "网关:     已停止"
+fi
+
+# PTY port
+if _check_port "$pty_port"; then
+echo "Web PTY:  运行中 (端口 $pty_port)"
+else
+echo "Web PTY:  已停止"
+fi
+}

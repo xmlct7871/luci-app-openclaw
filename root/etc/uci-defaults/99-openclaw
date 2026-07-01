@@ -1,0 +1,105 @@
+#!/bin/sh
+# luci-app-openclaw v2026.6.10 — 首次安装/升级初始化脚本
+#
+# v2026.6.10 核心变更:
+#   - install_path 默认值改为 /root/.openclaw(与 upstream OpenClaw 一致)
+#   - 不再创建 openclaw Unix 用户(v3 以 root 跑)
+#   - 新增 v2 风格数据检测,检测到时拒绝启动
+#   - 不再使用 /opt/openclaw/{node,global,data} 包装层
+
+# ── 路径解析 ──
+[ -r /usr/libexec/openclaw-paths.sh ] && . /usr/libexec/openclaw-paths.sh
+OC_CONFIGURED_PATH="$(uci -q get openclaw.main.install_path 2>/dev/null || echo '/root/.openclaw')"
+if command -v oc_load_paths >/dev/null 2>&1 && oc_load_paths "$OC_CONFIGURED_PATH"; then
+	OC_BASE_PATH="$STATE_DIR"
+	OC_INSTALL_PATH="$STATE_DIR"
+else
+	OC_BASE_PATH="/root/.openclaw"
+	OC_INSTALL_PATH="/root/.openclaw"
+	# 回填关键 env var(以防 oc_load_paths 不可用)
+	NODE_BASE="${OC_INSTALL_PATH}/node"
+	NPM_LIB="${NODE_BASE}/lib/node_modules"
+	CONFIG_FILE="${OC_INSTALL_PATH}/openclaw.json"
+	EXT_DIR="${OC_INSTALL_PATH}/extensions"
+	WORKSPACE_DIR="${OC_INSTALL_PATH}/workspace"
+	AGENTS_DIR="${OC_INSTALL_PATH}/agents"
+	LOGS_DIR="${OC_INSTALL_PATH}/logs"
+	BACKUPS_DIR="${OC_INSTALL_PATH}/backups"
+	NPM_CACHE_DIR="${OC_INSTALL_PATH}/.npm"
+	TMP_DIR="${OC_INSTALL_PATH}/.tmp"
+	CACHE_DIR="${OC_INSTALL_PATH}/.cache"
+	OPENCLAW_STATE_DIR="$OC_INSTALL_PATH"
+	OPENCLAW_CONFIG_PATH="$CONFIG_FILE"
+	export NODE_BASE NPM_LIB CONFIG_FILE EXT_DIR WORKSPACE_DIR AGENTS_DIR \
+	       LOGS_DIR BACKUPS_DIR NPM_CACHE_DIR TMP_DIR CACHE_DIR \
+	       OPENCLAW_STATE_DIR OPENCLAW_CONFIG_PATH
+fi
+
+# ── v2 风格数据检测(只支持全新安装) ──
+# v2 数据布局: ${base}/openclaw/data/.openclaw/openclaw.json
+#              或 ${install_path}/data/.openclaw/openclaw.json
+if command -v oc_detect_v2_layout >/dev/null 2>&1; then
+	V2_LAYOUT=$(oc_detect_v2_layout "$OC_INSTALL_PATH" 2>/dev/null || true)
+	if [ -n "$V2_LAYOUT" ]; then
+		cat > /tmp/openclaw-v2-detect.log <<EOF
+==============================================
+  ⚠️  luci-app-openclaw v2026.6.10 检测到 v2 风格数据
+==============================================
+
+检测到位置: ${V2_LAYOUT}
+配置入口:   ${V2_LAYOUT}/openclaw.json
+
+v2026.6.10 不提供数据自动迁移。
+v2026.6.10 的目录布局已与 upstream OpenClaw 一致,
+默认 install_path = /root/.openclaw(不再使用 /opt/openclaw 包装)。
+
+请按以下步骤手动升级:
+  1. 卸载当前版本:  opkg remove luci-app-openclaw
+  2. 备份 v2 数据:   cp -a ${V2_LAYOUT} /tmp/openclaw-v2-backup
+                     (同时备份 /etc/config/openclaw)
+  3. 清理 v2 数据:   opkg --force-remove --force-depends remove luci-app-openclaw
+                     rm -rf /opt/openclaw
+                     rm -f /etc/config/openclaw
+  4. 安装 v2026.6.10:opkg install luci-app-openclaw_2026.6.10-1_all.ipk
+  5. 在 LuCI 重新配置:服务 → OpenClaw → 安装运行环境
+
+详细升级指南见 README "v2 → v2026.6.10 升级指南" 段落。
+==============================================
+EOF
+		logger -t openclaw "检测到 v2 风格数据,请按 /tmp/openclaw-v2-detect.log 步骤升级"
+	fi
+fi
+
+# ── 生成随机 Token(如果尚未设置) ──
+CURRENT_TOKEN=$(uci -q get openclaw.main.token)
+if [ -z "$CURRENT_TOKEN" ]; then
+	TOKEN=$(head -c 24 /dev/urandom | hexdump -e '24/1 "%02x"' 2>/dev/null || dd if=/dev/urandom bs=24 count=1 2>/dev/null | od -An -tx1 | tr -d ' \n' | head -c 48)
+	uci set openclaw.main.token="$TOKEN"
+	uci commit openclaw
+fi
+
+# ── 生成 PTY Token(如果尚未设置) ──
+CURRENT_PTY_TOKEN=$(uci -q get openclaw.main.pty_token)
+if [ -z "$CURRENT_PTY_TOKEN" ]; then
+	PTY_TOKEN=$(head -c 24 /dev/urandom | hexdump -e '24/1 "%02x"' 2>/dev/null || dd if=/dev/urandom bs=24 count=1 2>/dev/null | od -An -tx1 | tr -d ' \n' | head -c 48)
+	uci set openclaw.main.pty_token="$PTY_TOKEN"
+	uci commit openclaw
+fi
+
+# ── 设置 install_path 默认值(首次安装) ──
+# 如果 UCI 里没有 install_path,设置 upstream 默认
+CURRENT_INSTALL_PATH=$(uci -q get openclaw.main.install_path)
+if [ -z "$CURRENT_INSTALL_PATH" ]; then
+	uci set openclaw.main.install_path='/root/.openclaw'
+	uci commit openclaw
+fi
+
+# ── 启用服务自启动(尊重用户选择) ──
+if [ -x /etc/init.d/openclaw ]; then
+	OC_ENABLED=$(uci -q get openclaw.main.enabled)
+	if [ "$OC_ENABLED" != "0" ]; then
+		/etc/init.d/openclaw enable 2>/dev/null
+	fi
+fi
+
+exit 0
