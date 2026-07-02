@@ -13,11 +13,15 @@ on:
         default: ''
 
 jobs:
-  build-ipk:
-    name: Build IPK package
+  # ── 构建 IPK,产出 artifact 并把版本信息外抛给 release job ──
+  build:
+    name: Build .ipk package
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag:     ${{ steps.version.outputs.tag }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -41,20 +45,14 @@ jobs:
 
       - name: Inject version
         run: |
-          VER="${{ steps.version.outputs.version }}"
-          echo "$VER" > VERSION
-          sed -i "s/^PKG_VERSION:=.*/PKG_VERSION:=$VER/" Makefile
+          echo "${{ steps.version.outputs.version }}" > VERSION
+          sed -i "s/^PKG_VERSION:=.*/PKG_VERSION:=${{ steps.version.outputs.version }}/" Makefile
 
       - name: Build .ipk package
         run: |
           chmod +x scripts/build_ipk.sh
-          # 第一个参数是 SRC_DIR(项目根)，不传则脚本自动定位
+          # 第一个参数是 SRC_DIR (项目根),不传则脚本自动定位
           sh scripts/build_ipk.sh .
-
-      - name: List outputs
-        run: |
-          echo "=== Build artifacts ==="
-          ls -lh dist/
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -63,3 +61,58 @@ jobs:
           path: dist/*.ipk
           retention-days: 30
           compression-level: 0
+
+  # ── 把 IPK 附到 GitHub Release,与源代码 zip/tar.gz 同页可供下载 ──
+  # 仅在推 tag 时触发 (workflow_dispatch 触发则不发布 release)
+  release:
+    name: Attach IPK to GitHub Release
+    needs: build
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download IPK artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: luci-app-openclaw-${{ needs.build.outputs.version }}
+          path: dist/
+
+      - name: Extract release notes from CHANGELOG
+        id: notes
+        run: |
+          VER="${{ needs.build.outputs.version }}"
+          CHANGELOG=$(awk "/^## \\[${VER}\\]/{found=1; next} /^## \\[/{if(found) exit} found{print}" CHANGELOG.md)
+          if [ -z "$CHANGELOG" ]; then
+            CHANGELOG="暂无更新日志"
+          fi
+          {
+            echo "notes<<NOTES_EOF"
+            echo "$CHANGELOG"
+            echo "NOTES_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create Release and attach IPK
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.build.outputs.tag }}
+          name: ${{ needs.build.outputs.version }}
+          generate_release_notes: false
+          body: |
+            ${{ steps.notes.outputs.notes }}
+
+            ---
+
+            ## 📥 安装
+
+            把 `luci-app-openclaw_${{ needs.build.outputs.version }}-1_all.ipk` 上传到路由器,然后:
+
+            ```bash
+            opkg install luci-app-openclaw_${{ needs.build.outputs.version }}-1_all.ipk
+            ```
+
+            [使用文档](https://github.com/xmlct7871/luci-app-openclaw#readme) · [问题反馈](https://github.com/xmlct7871/luci-app-openclaw/issues)
+          files: dist/*.ipk
+          fail_on_unmatched_files: true
+          draft: false
+          prerelease: false
