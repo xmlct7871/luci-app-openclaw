@@ -4,6 +4,43 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 
+## [1.0.0] - 2026-07-16
+
+### 重新定位：ImmortalWrt 适配 + OpenClaw 自由升级
+
+本版是本仓库的**重构版首发**（沿用 2026.6.10 重构成果，版本号切换为语义化 `1.0.0`）。
+
+#### 版本号调整
+
+- 本插件版本号由日期风格（`2026.6.10`）切换为语义化版本（`1.0.0`）。
+- **OpenClaw 上游版本号保持 `2026.6.10` 不变**，因为它是 OpenClaw npm 包的发布号，不属于本仓库。
+- 上游 OpenClaw 后续版本自由升级，**本插件 v1.0.0 不需要重新适配**（见下方"架构收益"）。
+
+#### 适配目标调整
+
+- 主要适配目标由 OpenWrt 通用改为 **ImmortalWrt**（同时声明 OpenWrt / iStoreOS 兼容）。
+- Makefile `LUCI_TITLE` 更新为 `OpenClaw AI 网关 LuCI 管理插件(ImmortalWrt 重构版)`，OpenWrt 包管理界面可直接看到这个标识。
+
+#### 文档与外部文案
+
+- README 顶部重写：突出"**适配 ImmortalWrt，按 OpenClaw 原版目录布局落盘，OpenClaw 后续版本升级无需重新适配**"。
+- 与原版的差异表格重构：增加"架构路线"和"OpenClaw 升级"两个维度，明确以架构重构为主线。
+- GitHub 仓库 `About` 描述改为：`OpenClaw AI 网关 LuCI 管理插件重构版，适配ImmortalWrt，OpenClaw可升级无须重新适配`。
+
+#### 架构收益（与原版 v2.0.6 对比，详见 README）
+
+- **架构路线**：原版自建 `/opt/openclaw/{node,global,data}/` 三层包装层；本版改为**对齐 upstream OpenClaw 默认布局**，零包装层。
+- **路径策略**：`install_path` 自身就是 OpenClaw state dir（默认 `/root/.openclaw`），所有内容平铺到根，与 upstream `~/.openclaw/` 一一对应。
+- **运行身份**：以 root 跑（ImmortalWrt / OpenWrt 惯例），免去 75+ 处 `chown` 调用。
+- **OpenClaw 升级**：原版每次 OpenClaw 新版本都要重新适配包装层；**本版 OpenClaw 任意版本升级无需重新适配本插件**——因为目录布局与 upstream 默认一致，CLI 调用通过显式 `OPENCLAW_STATE_DIR` / `OPENCLAW_CONFIG_PATH` / `HOME` 直接落到 upstream 期望的位置。
+
+#### 提交与发布
+
+- 删除历史 `v2026.6.10` 标签和对应 GitHub Release。
+- 推送新标签 `v1.0.0`，CI 重新构建 IPK 并附到 v1.0.0 Release。
+
+> 注：本节之前的历史条目（特别是 `## [2026.6.10] - 2026-06-29`）记录的是本次重构本身的代码改动，对应的代码现状就是 v1.0.0 的实现。版本号切换只是发布与文档层面的重新定位，不引入新的行为变更。
+
 ## [2026.6.10] - 2026-06-29
 
 ### ⚠️ 重大架构变更 (Breaking Changes)

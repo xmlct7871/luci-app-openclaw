@@ -12,7 +12,7 @@ PKG_RELEASE:=1
 PKG_MAINTAINER:=xmlct7871 <xmlct787@gmail.com>
 PKG_LICENSE:=GPL-3.0
 
-LUCI_TITLE:=OpenClaw AI 网关 LuCI 管理插件
+LUCI_TITLE:=OpenClaw AI 网关 LuCI 管理插件(ImmortalWrt 重构版)
 LUCI_DEPENDS:=+luci-compat +luci-base +curl +openssl-util +script-utils +tar +libstdcpp6
 LUCI_PKGARCH:=all
 
@@ -31,8 +31,9 @@ ifeq ($(wildcard $(TOPDIR)/feeds/luci/luci.mk),)
   endef
 
   define Package/$(PKG_NAME)/description
-    OpenClaw AI Gateway 的 LuCI 管理插件(v2026.6.10)。
-    适配上游 OpenClaw v2026.6.10 的原生目录布局(状态目录在 /root/.openclaw)。
+    OpenClaw AI Gateway 的 LuCI 管理插件(luci-app-openclaw v1.0.0 — 重构版)。
+    适配 ImmortalWrt 系统，在原版 OpenClaw 目录布局上完全对齐上游,
+    OpenClaw 后续版本可自由升级，无需重新适配本插件。
     支持 12+ AI 模型提供商和 Telegram/Discord/微信 等多种消息渠道。
     以 root 用户运行服务,无中间包装层。
   endef
