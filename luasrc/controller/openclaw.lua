@@ -355,6 +355,8 @@ function action_status()
 		end
 
 		-- 读取已配置的渠道列表
+		-- 注意: 除"openclaw-weixin" 外，所有渠道都要求节点存在 且 凭据 key 为非空字符串,
+		-- 否则上游 onboard 在 channels.* 里种下的空块会被误判为"已配置"。
 		local channels = {}
 		if content:match('"openclaw%-weixin"%s*:%s*{') then
 			channels[#channels+1] = "微信"
@@ -365,13 +367,13 @@ function action_status()
 		if content:match('"telegram"%s*:%s*{') and content:match('"botToken"%s*:%s*"[^"]+"') then
 			channels[#channels+1] = "Telegram"
 		end
-		if content:match('"discord"%s*:%s*{') then
+		if content:match('"discord"%s*:%s*{') and content:match('"botToken"%s*:%s*"[^"]+"') then
 			channels[#channels+1] = "Discord"
 		end
-		if content:match('"feishu"%s*:%s*{') then
+		if content:match('"feishu"%s*:%s*{') and content:match('"appId"%s*:%s*"[^"]+"') then
 			channels[#channels+1] = "飞书"
 		end
-		if content:match('"slack"%s*:%s*{') then
+		if content:match('"slack"%s*:%s*{') and content:match('"botToken"%s*:%s*"[^"]+"') then
 			channels[#channels+1] = "Slack"
 		end
 		if #channels > 0 then
