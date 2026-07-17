@@ -102,6 +102,46 @@ done < "$_tmpf"
 rm -f "$_tmpf"
 }
 
+# ── v1.0.1: per-OpenClaw-version cleanup gate ──
+# 把原来"每次 start 都跑一遍"的几个一次性副作用（fix_plugin_config /
+# _ensure_critical_config / patch_iframe_headers）改成"每个 OpenClaw 版本只跑一次"。
+# 标记: ${OC_DATA}/.restart-cleanup-marker，里面是当前 OpenClaw 版本号；
+# OpenClaw 升级时（版本号变化）标记失效，重新跑一次。
+_OC_RESTART_CLEANUP_MARKER="${OC_DATA}/.restart-cleanup-marker"
+_OC_CACHED_VER=""
+
+# 返回当前已安装的 OpenClaw 版本号（semver 形式，比如 2026.6.10），无则返回空串
+_oc_get_oc_ver() {
+	[ -n "$_OC_CACHED_VER" ] && { echo "$_OC_CACHED_VER"; return; }
+	[ -x "$NODE_BIN" ] || return
+	local oc_entry
+	oc_entry=$(get_oc_entry)
+	[ -n "$oc_entry" ] || return
+	_OC_CACHED_VER=$("$NODE_BIN" "$oc_entry" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+	echo "$_OC_CACHED_VER"
+}
+
+# 0 = 本次 start 还需要执行一次性清理；1 = 当前 OC 版本已做过，跳过
+_oc_per_version_cleanup_pending() {
+	local cur_ver
+	cur_ver=$(_oc_get_oc_ver)
+	[ -z "$cur_ver" ] && return 0  # 拿不到版本 → 当作需要执行
+	[ -f "$_OC_RESTART_CLEANUP_MARKER" ] || return 0
+	local marker
+	marker=$(cat "$_OC_RESTART_CLEANUP_MARKER" 2>/dev/null | tr -d '[:space:]')
+	[ "$marker" = "$cur_ver" ] && return 1
+	return 0
+}
+
+# 把当前 OC 版本号写进标记文件
+_oc_mark_per_version_cleanup() {
+	local cur_ver
+	cur_ver=$(_oc_get_oc_ver)
+	[ -z "$cur_ver" ] && return 0
+	[ -d "$OC_DATA" ] || mkdir -p "$OC_DATA" 2>/dev/null || return 0
+	echo "$cur_ver" > "$_OC_RESTART_CLEANUP_MARKER" 2>/dev/null || true
+}
+
 patch_iframe_headers() {
 # 移除 OpenClaw 网关的 X-Frame-Options 和 frame-ancestors 限制，允许 LuCI iframe 嵌入
 # v2026.4.x: 安全头设置迁移到 server.impl-*.js 文件
@@ -366,7 +406,11 @@ fi
 		}catch(e){}
 		" 2>/dev/null
 	}
-	fix_plugin_config
+	if _oc_per_version_cleanup_pending; then
+		fix_plugin_config
+	else
+		logger -t openclaw "fix_plugin_config: 当前 OpenClaw 版本已执行，跳过"
+	fi
 
 	# 修复数据目录权限 (防止 root 用户操作后留下无法读取的文件)
 
@@ -396,18 +440,13 @@ fi
 			mv "$stale_dir" "${archive_root}/${stale_name}" 2>/dev/null || true
 		done
 	fi
-	if [ -d "$ext_dir" ]; then
-		chown -R root:root "$ext_dir" 2>/dev/null || true
-		chmod -R 755 "$ext_dir" 2>/dev/null || true
-	fi
-	if [ -d "$npm_projects_dir" ]; then
-		chown -R root:root "$npm_projects_dir" 2>/dev/null || true
-		chmod -R 755 "$npm_projects_dir" 2>/dev/null || true
-	fi
 
-	# v2026.4.x: 清理 jiti 缓存目录 (修复微信插件加载权限问题)
-	# jiti 编译 TypeScript 时会在 /tmp/jiti 创建缓存，如果由 root 创建则 openclaw 用户无法写入
-	rm -rf /tmp/jiti 2>/dev/null || true
+	# v1.0.1: 删除冗余的 extensions/npm/projects chown+chmod 块
+	#   - 服务以 root 运行 → chown root:root 永远为 no-op
+	#   - chmod -R 755 与下方 L535-543 完全重复
+	# jiti 缓存清理也一并删除：原文档写"root 创建后 openclaw 用户无法写入"，
+	#   现在已经没有 openclaw 用户，root 自身读写不需要清空 /tmp/jiti。
+	# extensions / npm/projects 的兜底 chmod 仍在 L535-543 的尾段执行。
 
 	# v2026.4.10: 优化配置迁移 - 只在版本变更时运行 doctor --fix
 	# 原因: doctor --fix 耗时 ~50 秒，每次重启都运行严重影响启动速度
@@ -491,7 +530,16 @@ d.update.checkOnStart = false;
 fs.writeFileSync(f, JSON.stringify(d, null, 2));
 " 2>/dev/null
 	}
-	_ensure_critical_config
+	# v1.0.1: 改成每个 OpenClaw 版本只跑一次
+	# 原行为每次 start 都强制重置 allowInsecureAuth / dangerouslyDisableDeviceAuth /
+	# dangerouslyAllowHostHeaderOriginFallback / update.checkOnStart 等字段，
+	# 用户手工收紧的设置会被静默吞掉。Gate 之后保留用户修改，
+	# 直到下次 OpenClaw 升级时再重新兜底。
+	if _oc_per_version_cleanup_pending; then
+		_ensure_critical_config
+	else
+		logger -t openclaw "_ensure_critical_config: 当前 OpenClaw 版本已执行，跳过"
+	fi
 
 		# v2026.4.10: doctor --fix 后再次同步 token (关键!)
 		# doctor --fix 可能修改了 JSON 中的 token，必须同步回 UCI
@@ -515,17 +563,15 @@ if(d.gateway&&d.gateway.auth&&d.gateway.auth.token)process.stdout.write(d.gatewa
 		}
 		_sync_token_after_doctor
 
-		# v2026.4.10: 最终权限修复 - 确保 Gateway 启动前所有数据目录权限正确
-		# doctor --fix 或 _ensure_critical_config 可能创建新的目录/文件
-		# 关键: agents 目录下的 agent 子目录必须可被 openclaw 用户写入
-		# v2026.6.10 修正: 路径写错(应为 ${OC_DATA},不是 ${OC_DATA}/.openclaw),
-		#                且 find 缺 -exec,等于空操作;同时修复三处重复 chmod
-		find "${OC_DATA}" -user root \
-			! -path "${OC_DATA}/extensions*" \
-			! -path "${OC_DATA}/archived-extensions*" \
-			! -path "${OC_DATA}/npm/projects*" \
-			-exec chmod 755 {} + 2>/dev/null || true
-		# 特别确保 agents/main/agent 目录权限 (模型配置写入目录)
+		# v1.0.1: 删除全树 find -exec chmod 755 大扫除 (历史包袱: 旧版有 openclaw 用户，
+		# root 创建的文件会被 openclaw 用户 EACCES；v2026.6.10 起以 root 运行后 Gateway 自身
+		# 可读写任何 root-owned 文件，整段 chmod 已无作用。几百~几千次系统调用浪费在每次 start)
+		#
+		# 下面保留三个针对性的兜底 chmod:
+		#  1) agents/main/agent (模型配置写入热目录)
+		#  2) extensions (插件目录,确保 gateway 可读)
+		#  3) archived-extensions (默认收紧 700)
+		#  4) npm/projects (微信 npm 子项目)
 		local agent_dir="${OC_DATA}/agents/main/agent"
 		if [ -d "$agent_dir" ]; then
 			chmod 755 "$agent_dir" 2>/dev/null || true
@@ -543,7 +589,18 @@ if(d.gateway&&d.gateway.auth&&d.gateway.auth.token)process.stdout.write(d.gatewa
 		fi
 
 	# Patch iframe 安全头，允许 LuCI 嵌入
-	patch_iframe_headers
+	# v1.0.1: 改成每 OC 版本只跑一次 (sed -i 不该每次 start 都戳 gateway JS)
+	if _oc_per_version_cleanup_pending; then
+		patch_iframe_headers
+	else
+		logger -t openclaw "patch_iframe_headers: 当前 OpenClaw 版本已执行，跳过"
+	fi
+
+	# 把标记写进 marker (在所有 gated 块之后，确保 fix_plugin_config /
+	# _ensure_critical_config / patch_iframe_headers 都跑过一遍)
+	if _oc_per_version_cleanup_pending; then
+		_oc_mark_per_version_cleanup
+	fi
 
 # 将 UCI bind 映射到 openclaw gateway --bind 参数
 local gw_bind="loopback"
