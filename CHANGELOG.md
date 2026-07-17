@@ -4,6 +4,41 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 
+## [1.0.1] - 2026-07-17
+
+### 启动链路精简 + 用户配置不再被静默重置
+
+补丁版，针对 root-run 架构下的冗余 / 旧包袱副作用做了清理。**不引入新功能，也不改 OpenClaw 集成的对外行为**。
+
+#### 改动 (`root/etc/init.d/openclaw`)
+
+新增文件级 helper：`_OC_RESTART_CLEANUP_MARKER="${OC_DATA}/.restart-cleanup-marker"` + `_oc_get_oc_ver` / `_oc_per_version_cleanup_pending` / `_oc_mark_per_version_cleanup`。标记文件里只放当前 OpenClaw 版本号，**OpenClaw 一升级就触发重跑**，同版本内重启一律跳过。
+
+#### A. 直接删除（重复或 no-op）
+
+- 删除 `start_service` 早期对 `${OC_DATA}/extensions/`、`${OC_DATA}/npm/projects/` 的 `chown -R root:root` + `chmod -R 755` 块（与下方 L535-543 完全重复；`chown` 在 root-run 下永远 no-op）。
+- 删除紧随其后的 `rm -rf /tmp/jiti`：v2026.4.x 时期的"openclaw 用户不能写 root-owned cache"修法，已经没有 openclaw 用户，root 自身读写 `/tmp/jiti` 没有 EACCES。
+- 删除全树 `find "${OC_DATA}" -user root ... -exec chmod 755 {} +` 大扫除：同样基于已废除的 openclaw-user 假设，每次 start 触发几百~几千次 chmod 系统调用。
+- 后者两段删除后，保留 4 个针对性 chmod 兜底：`agents/main/agent`（模型配置写入热目录）、`extensions`（插件读取）、`archived-extensions`（收紧 700）、`npm/projects`（微信子项目）。
+
+#### B. 升级到每 OC 版本只跑一次
+
+- `fix_plugin_config` — `openclaw-qqbot → @tencent-connect/openclaw-qqbot` 旧名迁移的插件 ID 修复。
+- `_ensure_critical_config` — 强制回写 `gateway.controlUi.allowInsecureAuth / dangerouslyDisableDeviceAuth / dangerouslyAllowHostHeaderOriginFallback` 与 `update.checkOnStart` 等字段。
+- `patch_iframe_headers` — `sed -i` 戳 OpenClaw gateway 的 `server.impl-*.js` / `gateway-cli-*.js`。
+
+三段都改为受 marker gate 控制：仅在 OpenClaw 版本升级后第一次 start 跑，之后每次 restart 都跳过。**`_ensure_critical_config` 之前每次 start 都会无脑把用户的收紧覆盖回 true**——这是用户报告的"`allowInsecureAuth` 关不掉"的根因；升 v1.0.1 后，用户主动改 JSON 里的字段，重启不会被冲掉，直到下次 OpenClaw 升级才重新兜底一次。
+
+#### C. 同时包含的旧 fix
+
+- 早先会话已合入的 `d464f4f`：状态页"消息渠道"对 Discord / 飞书 / Slack 的判定从"节点存在"收紧为"凭据 key 非空"，避免被 upstream `openclaw.json` 里的空块误标。
+
+#### 升级路径
+
+- 现有 v1.0.0 安装直接 `opkg install luci-app-openclaw_1.0.1-1_all.ipk` 覆盖升级即可。
+- 第一次 start 时 marker 缺失，三段 gated cleanup 会跑一次；之后再 start 就只跑"启动服务本体"，启动延迟显著下降（patch_iframe_headers + fix_plugin_config + _ensure_critical_config 三段合计省掉一次 `node` 调用 + 一次 `sed -i` 扫描 + 多次 `fs.writeFileSync`）。
+- 如果之前手动改过 `gateway.controlUi.allowInsecureAuth` 等字段，**v1.0.0 升级到 v1.0.1 后这些改动会被 C 段兜底冲回一次**（因为 `_ensure_critical_config` 标记为新版本未跑）。之后重启就不会再被冲掉。如需再次收紧，请先装好 v1.0.1 之后再编辑。
+
 ## [1.0.0] - 2026-07-16
 
 ### 重新定位：ImmortalWrt 适配 + OpenClaw 自由升级

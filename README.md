@@ -1,4 +1,4 @@
-# luci-app-openclaw v1.0.0 — OpenClaw 重构版
+# luci-app-openclaw v1.0.1 — OpenClaw 重构版
 
 [![Bilibili](https://img.shields.io/badge/B%E7%AB%99-59438380-00a1d6?logo=bilibili)](https://space.bilibili.com/59438380)
 [![Blog](https://img.shields.io/badge/Blog-910501.xyz-orange)](https://blog.910501.xyz/)
@@ -19,7 +19,7 @@
 
 **与原版的核心差异**
 
-| 维度 | 原版 (v2.0.6) | 本版 (v1.0.0) |
+| 维度 | 原版 (v2.0.6) | 本版 (v1.0.1) |
 |------|---------------|-------------------|
 | 架构路线 | 自建 `/opt/openclaw/{node,global,data}/` 包装层 | 对齐 upstream OpenClaw 默认布局，零包装层 |
 | 安装路径 | `/opt/openclaw/{node,global,data}/` 三层嵌套 | `/root/.openclaw`，扁平化，与 upstream `~/.openclaw/` 完全一致 |
@@ -47,7 +47,7 @@
 
 | 组件 | 默认版本 | 说明 |
 |------|----------|------|
-| 本插件 luci-app-openclaw | `v1.0.0`（重构版首发） | 详见 [CHANGELOG](CHANGELOG.md) |
+| 本插件 luci-app-openclaw | `v1.0.1`（重构版首发 + v1.0.1 清理） | 详见 [CHANGELOG](CHANGELOG.md) |
 | OpenClaw（上游 npm 包） | `2026.6.10`（可自由升级） | 本插件目录布局与 upstream OpenClaw 默认一致，**后续任意 OpenClaw 版本升级无需重新适配本插件** |
 | 适配目标系统 | ImmortalWrt（兼容 OpenWrt / iStoreOS） | 路径与 procd 行为按 ImmortalWrt 惯例校准 |
 | Node.js | `24.15.0` | OpenClaw 2026.6.x 要求 `>=22.19.0`；安装后会按 `engines.node` 做强校验，低于要求会直接失败 |
@@ -182,7 +182,7 @@ luci-app-openclaw/
 
 ## 📂 运行时目录结构
 
-**v1.0.0（重构版）默认 `install_path = /root/.openclaw`**，目录布局完全匹配上游 OpenClaw（`~/.openclaw/` 的平铺结构）：
+**v1.0.1（重构版）默认 `install_path = /root/.openclaw`**，目录布局完全匹配上游 OpenClaw（`~/.openclaw/` 的平铺结构）：
 
 ```
 /root/.openclaw/                          # install_path 自身(就是 OpenClaw state dir)
@@ -208,7 +208,7 @@ luci-app-openclaw/
 ```bash
 uci set openclaw.main.install_path='/mnt/sda1/openclaw'
 uci commit openclaw
-opkg install luci-app-openclaw_1.0.0-1_all.ipk
+opkg install luci-app-openclaw_1.0.1-1_all.ipk
 ```
 
 **关键变化（架构重构，重构版相比原版的核心差异）**：

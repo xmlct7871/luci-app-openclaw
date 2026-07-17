@@ -13,7 +13,7 @@
 #   OUT_DIR  输出目录。默认为 <SRC_DIR>/dist
 #
 # 输出:
-#   <OUT_DIR>/luci-app-openclaw_1.0.0-1_all.ipk
+#   <OUT_DIR>/luci-app-openclaw_1.0.1-1_all.ipk
 #
 # 设计要点:
 #   - 纯 busybox/GNU tar + gzip,无 Python 依赖
@@ -31,7 +31,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" 2>/dev/null && pwd || echo "")"
 if [ -n "$SCRIPT_DIR" ]; then
     DEFAULT_SRC="$(cd "$SCRIPT_DIR/.." && pwd)"
 else
-    DEFAULT_SRC="/tmp/luci-app-openclaw-1.0.0"
+    DEFAULT_SRC="/tmp/luci-app-openclaw-1.0.1"
 fi
 
 SRC="${1:-$DEFAULT_SRC}"
@@ -47,7 +47,7 @@ else
 fi
 
 PKG_NAME="luci-app-openclaw"
-PKG_VERSION="1.0.0"
+PKG_VERSION="1.0.1"
 PKG_RELEASE="1"
 PKG_ARCH="all"
 IPK_FILE="$OUT/${PKG_NAME}_${PKG_VERSION}-${PKG_RELEASE}_${PKG_ARCH}.ipk"
@@ -178,7 +178,7 @@ SourceName: ${PKG_NAME}
 SourceDateEpoch: 1748582400
 URL: https://github.com/xmlct7871/luci-app-openclaw
 Installed-Size: $(du -sk "$DATA" 2>/dev/null | awk '{print $1}')
-Description: OpenClaw AI Gateway LuCI management plugin (v1.0.0 refactor).
+Description: OpenClaw AI Gateway LuCI management plugin (v1.0.1 refactor).
  Adapted for ImmortalWrt, follows upstream OpenClaw's native layout
  (state dir at /root/.openclaw) so OpenClaw can be upgraded freely
  without re-adapting this plugin. Supports 12+ AI providers and

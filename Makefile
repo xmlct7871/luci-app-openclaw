@@ -6,7 +6,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-openclaw
-PKG_VERSION:=$(strip $(shell cat $(CURDIR)/VERSION 2>/dev/null || echo "1.0.0"))
+PKG_VERSION:=$(strip $(shell cat $(CURDIR)/VERSION 2>/dev/null || echo "1.0.1"))
 PKG_RELEASE:=1
 
 PKG_MAINTAINER:=xmlct7871 <xmlct787@gmail.com>
@@ -31,7 +31,7 @@ ifeq ($(wildcard $(TOPDIR)/feeds/luci/luci.mk),)
   endef
 
   define Package/$(PKG_NAME)/description
-    OpenClaw AI Gateway 的 LuCI 管理插件(luci-app-openclaw v1.0.0 — 重构版)。
+    OpenClaw AI Gateway 的 LuCI 管理插件(luci-app-openclaw v1.0.1 — 重构版)。
     适配 ImmortalWrt 系统，在原版 OpenClaw 目录布局上完全对齐上游,
     OpenClaw 后续版本可自由升级，无需重新适配本插件。
     支持 12+ AI 模型提供商和 Telegram/Discord/微信 等多种消息渠道。
