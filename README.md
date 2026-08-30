@@ -1,39 +1,19 @@
-# luci-app-openclaw v1.0.1 — OpenClaw 重构版
+# OpenClaw ImmortalWrt 插件
 
 [![Bilibili](https://img.shields.io/badge/B%E7%AB%99-59438380-00a1d6?logo=bilibili)](https://space.bilibili.com/59438380)
 [![Blog](https://img.shields.io/badge/Blog-910501.xyz-orange)](https://blog.910501.xyz/)
 [![Build & Release](https://github.com/xmlct7871/luci-app-openclaw/actions/workflows/build.yml/badge.svg)](https://github.com/xmlct7871/luci-app-openclaw/actions/workflows/build.yml)
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](LICENSE)
 
-[OpenClaw](https://github.com/openclaw/openclaw) AI 网关的 LuCI 管理插件**重构版**，专为 **ImmortalWrt** 系统适配，并按上游 OpenClaw 原始目录布局落盘。
+[OpenClaw](https://github.com/openclaw/openclaw) AI 网关的 LuCI 管理插件，专为 **ImmortalWrt** 系统适配，安装路径与上游 OpenClaw 默认布局对齐。
 
-> **核心卖点：从本插件 v1.0.0 起，OpenClaw 后续版本升级无需重新适配本插件。**
-> 原版仓库: [10000ge10000/luci-app-openclaw](https://github.com/10000ge10000/luci-app-openclaw) (v2.0.6)。
-> 本仓库为全新架构重构版本，由原版的"内嵌 OpenClaw 包装层"改为"对齐 upstream OpenClaw 在 root 用户下的默认布局"。
-
-**为什么 OpenClaw 升级不再需要重新适配本插件**
-
-- 本版安装路径 = OpenClaw 官方在 `root` 下的默认路径（`/root/.openclaw`），目录层级与上游一一对应（`openclaw.json`、`workspace/`、`extensions/`、`secrets.json`、`agents/`、`hooks/`、`logs/`、`backups/`、`npm/projects/`，全部平铺）。
-- 不再额外维护 OpenClaw 的 `node` / `global` / `data` 三层包装，所有 OpenClaw CLI 调用通过显式 `OPENCLAW_STATE_DIR` / `OPENCLAW_CONFIG_PATH` / `HOME` 等环境变量直接落到 upstream 期望的位置，避免 `~/.openclaw/` 的解析歧义。
-- 上游 OpenClaw 升级引入的新配置、新文件、新子目录，本插件只要保证"不破坏其默认落盘位置"即可兼容；不需要重新改写包装层。
-
-**与原版的核心差异**
-
-| 维度 | 原版 (v2.0.6) | 本版 (v1.0.1) |
-|------|---------------|-------------------|
-| 架构路线 | 自建 `/opt/openclaw/{node,global,data}/` 包装层 | 对齐 upstream OpenClaw 默认布局，零包装层 |
-| 安装路径 | `/opt/openclaw/{node,global,data}/` 三层嵌套 | `/root/.openclaw`，扁平化，与 upstream `~/.openclaw/` 完全一致 |
-| 运行用户 | 自建 `openclaw` Unix 用户 | 以 root 跑(ImmortalWrt / OpenWrt 惯例) |
-| 目录布局 | 三层包装(node / global / data) | 跟 upstream OpenClaw 一一对应 |
-| **OpenClaw 升级** | **每个 OpenClaw 新版本都需要重新适配包装层** | **OpenClaw 任意版本升级都无需重新适配本插件（路径/调用已与 upstream 对齐）** |
-| 适配目标 | OpenWrt 原生 | **ImmortalWrt**（OpenWrt / iStoreOS 兼容） |
-| 配置文件 | 与 upstream 不一致，需专门迁移 | 与 upstream `openclaw.json` schema 同构，OpenClaw `doctor --fix` 可直接吃 |
+> OpenClaw 后续版本升级无需重新适配本插件——安装路径与 upstream OpenClaw 在 `root` 用户下的默认路径（`/root/.openclaw`）完全一致。
 
 <div align="center">
   <img src="docs/images/2.png" alt="OpenClaw LuCI 管理界面" width="800" style="border-radius:8px;" />
 </div>
 
-**系统要求**
+## 系统要求
 
 | 项目 | 要求 |
 |------|------|
@@ -43,12 +23,12 @@
 | 存储 | **2GB 以上可用空间** |
 | 内存 | 推荐 1GB 及以上 |
 
-**当前适配版本**
+## 适配版本
 
 | 组件 | 默认版本 | 说明 |
 |------|----------|------|
-| 本插件 luci-app-openclaw | `v1.0.1`（重构版首发 + v1.0.1 清理） | 详见 [CHANGELOG](CHANGELOG.md) |
-| OpenClaw（上游 npm 包） | `2026.6.10`（可自由升级） | 本插件目录布局与 upstream OpenClaw 默认一致，**后续任意 OpenClaw 版本升级无需重新适配本插件** |
+| OpenClaw ImmortalWrt 插件 | `v1.0.1` | 详见 [CHANGELOG](CHANGELOG.md) |
+| OpenClaw（上游 npm 包） | `2026.6.10`（可自由升级） | 目录布局与 upstream 默认一致，后续任意 OpenClaw 版本升级无需重新适配本插件 |
 | 适配目标系统 | ImmortalWrt（兼容 OpenWrt / iStoreOS） | 路径与 procd 行为按 ImmortalWrt 惯例校准 |
 | Node.js | `24.15.0` | OpenClaw 2026.6.x 要求 `>=22.19.0`；安装后会按 `engines.node` 做强校验，低于要求会直接失败 |
 | 微信插件 | `@tencent-weixin/openclaw-weixin@2.4.3` | CLI 使用 `@tencent-weixin/openclaw-weixin-cli@2.1.4` |
@@ -114,11 +94,11 @@ find bin/ -name "luci-app-openclaw*.ipk"
 3. 在「基本设置」点击「Web 控制台」添加 AI 模型和 API Key
 4. SSH 登录系统，运行 `openclaw config` 在终端配置消息渠道（QQ / Telegram / Discord 等）
 
-默认安装路径是 `/root/.openclaw`(与上游 OpenClaw 在 root 用户下的默认路径完全一致)。
+默认安装路径是 `/root/.openclaw`。
 
 ## 自定义安装路径
 
-UCI 字段是 `openclaw.main.install_path`,本版语义为 **state dir 自身** —— 所填路径就是 OpenClaw state dir 的根目录,脚本不会在其下再加一层 `openclaw/` 包装。例如:
+UCI 字段是 `openclaw.main.install_path`，本版语义为 **state dir 自身**——所填路径就是 OpenClaw state dir 的根目录，脚本不会在其下再加一层 `openclaw/` 包装。例如：
 
 ```bash
 uci set openclaw.main.install_path='/mnt/data/openclaw'
@@ -126,18 +106,18 @@ uci commit openclaw
 openclaw-env setup
 ```
 
-实际运行目录就是 `/mnt/data/openclaw`(直接)。插件不会做 `/xxx/openclaw` 包装。
+实际运行目录就是 `/mnt/data/openclaw`（直接）。插件不会做 `/xxx/openclaw` 包装。
 
-外置盘场景推荐:把整个 OpenClaw 装到 `/mnt/sda1/openclaw` 这样的子目录,备份时直接 `tar` 整目录。
+外置盘场景推荐：把整个 OpenClaw 装到 `/mnt/sda1/openclaw` 这样的子目录，备份时直接 `tar` 整目录。
 
-安装前会执行写入探针；如果 overlay 已满、只读或外置盘未正确挂载，安装会在下载前失败并给出明确日志。如果 `/opt` 或 `/root` 在 iStoreOS Docker bind mount 下不可写,`_oc_fix_overlay` 会自动 bind mount `/overlay/upper/<base>` 修复;最坏情况下会 fallback 到 `/tmp/openclaw-fallback-$$`。
+安装前会执行写入探针；如果 overlay 已满、只读或外置盘未正确挂载，安装会在下载前失败并给出明确日志。如果 `/opt` 或 `/root` 在 iStoreOS Docker bind mount 下不可写，`_oc_fix_overlay` 会自动 bind mount `/overlay/upper/<base>` 修复；最坏情况下会 fallback 到 `/tmp/openclaw-fallback-$$`。
 
 ## 微信插件依赖
 
-本版微信插件以 **root** 身份运行(不创建独立的 `openclaw` Unix 用户)。安装前会检查:
+本版微信插件以 **root** 身份运行。安装前会检查：
 
 - `python3` 是否已安装
-- `${install_path}/extensions/`、`${install_path}/.npm/`、`${install_path}/.tmp/` 等目录可写(以 root 跑天然满足)
+- `${install_path}/extensions/`、`${install_path}/.npm/`、`${install_path}/.tmp/` 等目录可写（以 root 跑天然满足）
 - 旧渠道名 `weixin` 会迁移为 `openclaw-weixin`
 
 如缺少 Python3：
@@ -182,11 +162,11 @@ luci-app-openclaw/
 
 ## 📂 运行时目录结构
 
-**v1.0.1（重构版）默认 `install_path = /root/.openclaw`**，目录布局完全匹配上游 OpenClaw（`~/.openclaw/` 的平铺结构）：
+默认 `install_path = /root/.openclaw`，目录布局与上游 OpenClaw `~/.openclaw/` 的平铺结构一一对应：
 
 ```
-/root/.openclaw/                          # install_path 自身(就是 OpenClaw state dir)
-├── node/                                 # Node.js 运行时(本插件管理)
+/root/.openclaw/                          # install_path 自身（就是 OpenClaw state dir）
+├── node/                                 # Node.js 运行时（插件管理）
 │   ├── bin/{node, npm, pnpm}
 │   └── lib/node_modules/openclaw/        # OpenClaw 包 (npm install -g --prefix=$node_parent)
 ├── openclaw.json                         # upstream: ~/.openclaw/openclaw.json
@@ -204,20 +184,13 @@ luci-app-openclaw/
 └── .cache/jiti/                          # jiti TypeScript 编译缓存
 ```
 
-**外置盘示例**:把整个 state dir 放到 `/mnt/sda1/openclaw`:
+**外置盘示例**：把整个 state dir 放到 `/mnt/sda1/openclaw`：
+
 ```bash
 uci set openclaw.main.install_path='/mnt/sda1/openclaw'
 uci commit openclaw
 opkg install luci-app-openclaw_1.0.1-1_all.ipk
 ```
-
-**关键变化（架构重构，重构版相比原版的核心差异）**：
-
-- **架构路线**：原版自建 `/opt/openclaw/{node,global,data}/` 三层包装层；本版改为**对齐 upstream OpenClaw 默认布局**，零包装层。
-- **路径策略**：原版在 `${install_path}/openclaw/` 下加一层；本版 `${install_path}` 自身就是 OpenClaw state dir，所有内容（`openclaw.json`、`workspace/`、`extensions/`、`secrets.json`、`agents/`、`hooks/`、`logs/`、`backups/`、`npm/projects/`）平铺到根，与 upstream `~/.openclaw/` 一一对应。
-- **运行身份**：原版需要创建 `openclaw` Unix 用户；本版以 root 跑（ImmortalWrt / OpenWrt 惯例），免去 75+ 处 `chown openclaw:openclaw` 调用。
-- **OpenClaw 升级路径**：原版每次 OpenClaw 新版本都要重新适配包装层；**本版 OpenClaw 任意版本升级无需重新适配本插件**——因为目录布局与 upstream 默认一致，CLI 调用通过显式 `OPENCLAW_STATE_DIR` / `OPENCLAW_CONFIG_PATH` / `HOME` 直接落到 upstream 期望的位置。
-- **适配目标**：从原版"OpenWrt 通用"改为**ImmortalWrt 优先**（同时兼容 OpenWrt / iStoreOS）。
 
 ## 🤝 贡献
 
