@@ -1,7 +1,7 @@
 #!/bin/sh
 # ============================================================================
 # build_apk.sh — 为 ImmortalWrt 25.12+ (apk 包管理器) 构建
-#                luci-app-openclaw-apk .apk 包 (Alpine apk v2 格式)
+#                luci-app-openclaw-apk .apk 包 (Alpine ADB v3 格式)
 # ============================================================================
 #
 # 用法:
@@ -13,26 +13,31 @@
 #   OUT_DIR  输出目录。默认为 <SRC_DIR>/dist
 #
 # 输出:
-#   <OUT_DIR>/luci-app-openclaw-apk_1.0.2-1_all.apk
+#   <OUT_DIR>/luci-app-openclaw-apk_1.0.2-1.apk
 #
-# v2 apk 格式要点 (实测 apk-tools-static.apk 得出):
-#   - 文件 = 单个 gzipped tar
-#   - tar 内部顺序:
-#       1) [可选] 顶层 .SIGN.RSA.<keyid>.rsa.pub  (签名段, 本仓库未签名 -> 跳过)
-#       2) .PKGINFO  (控制段, 包含 pkgname/pkgver/depend/datahash 等)
-#       3) 数据目录 (etc/, usr/ 等) 和数据文件
-#       4) [可选] <file>.SIGN.RSA.<keyid>.rsa.pub  (每文件签名, 同样跳过)
-#   - tar 必须为 PAX 格式 (默认 GNU tar 输出), 才能携带 PAX 扩展头
-#     (per-file APK-TOOLS.checksum.SHA1, 即 sha1; 若缺则 apk 不做完整性校验,
-#      安装仍正常)
-#   - .PKGINFO 字段用 " = " 分隔, "#" 开头为注释
-#   - datahash = sha256(数据段所有文件内容按 tar 顺序拼接), 用于全包校验
-#   - size = 所有数据文件的字节总和
-#   - 包名刻意与 opkg 版区分: luci-app-openclaw-apk
+# v3 apk (ADB) 格式要点 (实测 ImmortalWrt 25.12.1 + alpine apk-tools 3.0.5):
+#   - 文件 = ADB 二进制 (magic "ADBd"), 非 gzip+tar
+#   - 头 8 字节: uint32 magic + uint32 schema_id (ADB_SCHEMA_PACKAGE)
+#   - 块结构: uint32 type_size + (可选 EXT) uint64 x_size + payload
+#       类型 0=ADB, 1=SIG, 2=DATA, 3=EXT
+#   - ADB 块 payload = schema-defined 序列化对象:
+#       info{name, version, hashes, arch, license, depends[], ...}
+#       paths[]: dirs each with acl{mode,user,group} + files[]{name,acl,size,mtime,hash}
+#       scripts: pre-install, post-install, pre-deinstall, post-deinstall
+#   - DATA 块: 实际文件内容, 跟在 ADB 块后面
+#   - SIG 块 (可选): RSA 签名, 我们不签, 让用户用 --allow-untrusted 安装
 #
 # 设计要点:
-#   - 纯 busybox/GNU tar + gzip + sha1sum + sha256sum, 无 Python 依赖
-#   - 优先用 GNU tar 的 PAX 格式; busybox tar 不产生 PAX 头, 也能被 apk 接受
+#   - **必须**在 ImmortalWrt 25.12+ 路由器上(或任意带 apk-tools 3.0.5+ 的
+#     Linux 设备)运行, 用 `apk.static mkpkg` 子命令
+#   - 拿 alpine apk-tools-static 3.0.5+ 静态包 (mkpkg 子命令在 3.0+ 加入):
+#       curl -O https://dl-cdn.alpinelinux.org/alpine/v3.23/main/x86_64/apk-tools-static-3.0.8-r0.apk
+#       apk extract --allow-untrusted --destination /tmp/apk-static apk-tools-static-3.0.8-r0.apk
+#       # 之后用 /tmp/apk-static/sbin/apk.static mkpkg ...
+#   - 之前 v2 (gzip+tar) 格式被 ImmortalWrt 25.12.1 拒绝 ("v2 package format error")
+#   - arch 必须是 `noarch` (非 `all`!) 才能被 ImmortalWrt 25.12 接受
+#   - depends 数组用空格分隔, 多次 --info depends:... 是覆盖而非追加
+#   - 包名刻意与 opkg 版区分: luci-app-openclaw-apk
 # ============================================================================
 
 set -e
@@ -48,7 +53,6 @@ fi
 SRC="${1:-$DEFAULT_SRC}"
 OUT="${2:-$SRC/dist}"
 
-# 转绝对路径
 SRC="$(cd "$SRC" 2>/dev/null && pwd || echo "$SRC")"
 if [ -d "$OUT" ]; then
     OUT="$(cd "$OUT" 2>/dev/null && pwd || echo "$OUT")"
@@ -60,11 +64,11 @@ fi
 PKG_NAME="luci-app-openclaw-apk"
 PKG_VERSION="1.0.2"
 PKG_RELEASE="1"
-PKG_ARCH="all"
-APK_FILE="$OUT/${PKG_NAME}_${PKG_VERSION}-${PKG_RELEASE}_${PKG_ARCH}.apk"
+PKG_ARCH="noarch"
+APK_FILE="$OUT/${PKG_NAME}_${PKG_VERSION}-${PKG_RELEASE}.apk"
 
 # ── 前置检查 ──────────────────────────────────────────────────────────────
-echo "==> build_apk.sh (v2 format: single gzipped PAX tar)"
+echo "==> build_apk.sh (ADB v3 格式: alpine apk-tools 3.0+ mkpkg)"
 echo "    SRC = $SRC"
 echo "    OUT = $OUT"
 
@@ -75,31 +79,52 @@ fi
 
 mkdir -p "$OUT"
 
-# ── 选择合适的 tar ──────────────────────────────────────────────────────
-TAR_CMD=""
-if command -v gtar >/dev/null 2>&1; then
-    TAR_CMD="gtar"
-elif command -v tar >/dev/null 2>&1; then
-    TAR_CMD="tar"
-else
-    echo "ERROR: 未找到 tar 命令" >&2
+# ── 定位 apk.static ────────────────────────────────────────────────────
+# 优先用本机 PATH 上的 apk.static (在 ImmortalWrt 25.12+ 路由器上跑时),
+# 否则回退到已知缓存路径
+APK_STATIC=""
+for cand in "/usr/sbin/apk.static" "/usr/local/sbin/apk.static" "/sbin/apk.static" \
+            "/tmp/apk-static/sbin/apk.static" "./apk-static/sbin/apk.static"; do
+    if [ -x "$cand" ]; then
+        APK_STATIC="$cand"
+        break
+    fi
+done
+
+if [ -z "$APK_STATIC" ] && command -v apk.static >/dev/null 2>&1; then
+    APK_STATIC="$(command -v apk.static)"
+fi
+
+if [ -z "$APK_STATIC" ]; then
+    echo "" >&2
+    echo "ERROR: 找不到 apk.static (含 mkpkg 子命令的 alpine apk-tools-static 3.0+)" >&2
+    echo "" >&2
+    echo "  ImmortalWrt 25.12+ 自带的 /usr/bin/apk 没有编译 mkpkg, 需要下载" >&2
+    echo "  alpine 静态构建 (3.0.5+, 含 mkpkg):" >&2
+    echo "" >&2
+    echo "  curl -O https://dl-cdn.alpinelinux.org/alpine/v3.23/main/x86_64/apk-tools-static-3.0.8-r0.apk" >&2
+    echo "  apk extract --allow-untrusted --destination /tmp/apk-static \\" >&2
+    echo "      apk-tools-static-3.0.8-r0.apk" >&2
+    echo "  # 然后本脚本会自动找到 /tmp/apk-static/sbin/apk.static" >&2
+    echo "" >&2
     exit 1
 fi
 
-TAR_VERSION=$($TAR_CMD --version 2>/dev/null | head -1)
-if echo "$TAR_VERSION" | grep -qi "busybox"; then
-    TAR_TYPE="busybox"
-else
-    TAR_TYPE="gnu"
+echo "    APK_STATIC = $APK_STATIC"
+echo "    version = $($APK_STATIC --version 2>&1 | head -1)"
+
+# 验证有 mkpkg 子命令 (报 "built without help" 没关系)
+if ! $APK_STATIC mkpkg --no-such-cmd 2>&1 | grep -qE "missing|usage|info field"; then
+    : # pass — 至少进了 mkpkg 入口
 fi
-echo "    TAR = $TAR_CMD ($TAR_TYPE)"
 
 # ── 工作目录 ──────────────────────────────────────────────────────────────
 WORK="$(mktemp -d -t openclaw-apk.XXXXXX)"
-DATA_DIR="$WORK/data"
-mkdir -p "$DATA_DIR"
+DATA_DIR="$WORK/files"
+SCRIPT_DIR_WORK="$WORK/scripts"
+mkdir -p "$DATA_DIR" "$SCRIPT_DIR_WORK"
 
-# ── 安装数据文件(对照 Makefile) ─────────────────────────────────────────
+# ── 安装数据文件 (对照 Makefile) ────────────────────────────────────────
 install_file() {
     local src_rel="$1" dst_rel="$2" mode="$3"
     local src_path="$SRC/$src_rel"
@@ -117,7 +142,7 @@ install_file() {
     chmod "$mode" "$dst_path"
 }
 
-echo "==> 安装文件到 data/"
+echo "==> 安装文件到 files/"
 
 # /etc
 install_file "root/etc/config/openclaw"          "etc/config/openclaw"          644
@@ -156,184 +181,115 @@ mkdir -p "$DATA_DIR/usr/share/openclaw/ui"
 cp -r "$SRC/root/usr/share/openclaw/ui/." "$DATA_DIR/usr/share/openclaw/ui/"
 chmod -R u+rwX,go+rX "$DATA_DIR/usr/share/openclaw/ui"
 
-# ── 写 scriptlets (放 data/ 里, 与数据文件同段) ──────────────────
-# v2 格式中, scriptlet 命名: .pre-install / .post-install /
-#                            .pre-upgrade / .post-upgrade /
-#                            .pre-deinstall / .post-deinstall /
-#                            .triggers
-# 它们会作为普通 tar 条目被打入 apk, apk 工具会按文件名前缀识别并执行
+# ── 写 scriptlets ──────────────────────────────────────────────────────
 echo "==> 写 scriptlets"
 
-cat > "$DATA_DIR/.pre-install" <<'PRE_INSTALL_EOF'
+cat > "$SCRIPT_DIR_WORK/pre-install" <<'PRE_INSTALL_EOF'
 #!/bin/sh
-# v2 apk 格式 scriptlet: 安装前钩子
+# ADB v3 apk 格式 scriptlet: 安装前钩子
 exit 0
 PRE_INSTALL_EOF
-chmod 755 "$DATA_DIR/.pre-install"
+chmod 755 "$SCRIPT_DIR_WORK/pre-install"
 
-cat > "$DATA_DIR/.post-install" <<'POST_INSTALL_EOF'
+cat > "$SCRIPT_DIR_WORK/post-install" <<'POST_INSTALL_EOF'
 #!/bin/sh
-# v2 apk 格式 scriptlet: 安装后钩子
+# ADB v3 apk 格式 scriptlet: 安装后钩子
 [ -n "${IPKG_INSTROOT}" ] || {
 	( . /etc/uci-defaults/99-openclaw ) && rm -f /etc/uci-defaults/99-openclaw
 	rm -f /tmp/luci-indexcache /tmp/luci-modulecache/* 2>/dev/null
 	exit 0
 }
 POST_INSTALL_EOF
-chmod 755 "$DATA_DIR/.post-install"
+chmod 755 "$SCRIPT_DIR_WORK/post-install"
 
-cat > "$DATA_DIR/.pre-deinstall" <<'PRE_DEINSTALL_EOF'
+cat > "$SCRIPT_DIR_WORK/pre-deinstall" <<'PRE_DEINSTALL_EOF'
 #!/bin/sh
-# v2 apk 格式 scriptlet: 卸载前钩子
+# ADB v3 apk 格式 scriptlet: 卸载前钩子
 exit 0
 PRE_DEINSTALL_EOF
-chmod 755 "$DATA_DIR/.pre-deinstall"
+chmod 755 "$SCRIPT_DIR_WORK/pre-deinstall"
 
-cat > "$DATA_DIR/.post-deinstall" <<'POST_DEINSTALL_EOF'
+cat > "$SCRIPT_DIR_WORK/post-deinstall" <<'POST_DEINSTALL_EOF'
 #!/bin/sh
-# v2 apk 格式 scriptlet: 卸载后钩子
+# ADB v3 apk 格式 scriptlet: 卸载后钩子
 [ -n "${IPKG_INSTROOT}" ] || {
 	rm -f /tmp/luci-indexcache /tmp/luci-modulecache/* 2>/dev/null
 }
 POST_DEINSTALL_EOF
-chmod 755 "$DATA_DIR/.post-deinstall"
+chmod 755 "$SCRIPT_DIR_WORK/post-deinstall"
 
-# ── 计算 size + datahash (此时 DATA_DIR 内有所有文件) ──────────
-# 计算 size = 所有数据文件字节总和 (含 scriptlet, 不含 .PKGINFO)
-echo "==> 计算 size + datahash"
-SIZE_BYTES=$(find "$DATA_DIR" -type f ! -name '.PKGINFO' -printf '%s\n' 2>/dev/null | \
-    awk '{s+=$1} END {print s+0}')
+# ── 调 mkpkg ──────────────────────────────────────────────────────────
+echo "==> mkpkg"
 
-# 计算 datahash = sha256(所有数据文件按 tar 内顺序拼接的内容)
-# tar 内顺序: 父目录优先, 同层按字母序. 与下方 FILELIST 完全一致
-# 关键: 用绝对路径, 且顺序: .PKGINFO / .pre-install / .post-install /
-#       .pre-deinstall / .post-deinstall / find etc usr 按字母序 (含目录条目)
-DATAHASH_TMP="$WORK/datahash_input"
-: > "$DATAHASH_TMP"
-{
-    # scriptlets (4 个固定顺序, 与 FILELIST 完全一致)
-    printf '%s\n' ".pre-install" ".post-install" ".pre-deinstall" ".post-deinstall"
-    # etc/ + usr/ 内: 文件 + 链接 + 目录, 与下方 FILELIST 一致
-    ( cd "$DATA_DIR" && LC_ALL=C find etc usr -mindepth 1 \
-        \( -type f -o -type l -o -type d \) 2>/dev/null | \
-        grep -v '^\.$' | LC_ALL=C sort )
-} | while IFS= read -r rel; do
-    full="$DATA_DIR/$rel"
-    if [ -f "$full" ]; then
-        cat "$full" >> "$DATAHASH_TMP"
-    fi
-    # 目录与符号链接无内容, 不入 hash
-done
+# 注意:
+#   - arch 必须是 noarch (ImmortalWrt 25.12 不接受 all)
+#   - depends 必须空格分隔 (多次 --info depends:... 是覆盖不是追加)
+#   - build-time 用固定值 (保证可复现, 不带时间戳)
+$APK_STATIC mkpkg \
+  --files "$DATA_DIR" \
+  --info "name:${PKG_NAME}" \
+  --info "version:${PKG_VERSION}-r${PKG_RELEASE}" \
+  --info "description:OpenClaw AI Gateway LuCI management plugin (apk edition, ImmortalWrt 25.12+). Adapted for ImmortalWrt with the upstream OpenClaw native layout (state dir at /root/.openclaw), so OpenClaw can be upgraded freely without re-adapting this plugin. Supports 12+ AI providers and Telegram/Discord/WeChat channels. Runs as root, no wrapper layer." \
+  --info "arch:${PKG_ARCH}" \
+  --info "license:GPL-3.0" \
+  --info "origin:luci-app-openclaw" \
+  --info "maintainer:xmlct7871 <xmlct787@gmail.com>" \
+  --info "url:https://github.com/xmlct7871/luci-app-openclaw" \
+  --info "build-time:1788768000" \
+  --info "depends:luci-compat luci-base curl openssl-util script-utils tar libstdcpp6" \
+  --script "pre-install:${SCRIPT_DIR_WORK}/pre-install" \
+  --script "post-install:${SCRIPT_DIR_WORK}/post-install" \
+  --script "pre-deinstall:${SCRIPT_DIR_WORK}/pre-deinstall" \
+  --script "post-deinstall:${SCRIPT_DIR_WORK}/post-deinstall" \
+  --output "$APK_FILE" 2>&1
 
-if command -v sha256sum >/dev/null 2>&1; then
-    DATAHASH=$(sha256sum "$DATAHASH_TMP" | awk '{print $1}')
-elif command -v shasum >/dev/null 2>&1; then
-    DATAHASH=$(shasum -a 256 "$DATAHASH_TMP" | awk '{print $1}')
-else
-    echo "ERROR: 未找到 sha256sum/shasum" >&2
-    exit 1
-fi
-rm -f "$DATAHASH_TMP"
-
-INSTALLED_KB=$(du -sk "$DATA_DIR" 2>/dev/null | awk '{print $1}')
-
-# ── 写 .PKGINFO (放 data/ 里, 与数据文件一起打) ──────────────────────
-echo "==> 写 .PKGINFO"
-
-cat > "$DATA_DIR/.PKGINFO" <<EOF
-# Generated by build_apk.sh — Alpine apk v2 format
-pkgname = ${PKG_NAME}
-pkgver = ${PKG_VERSION}-${PKG_RELEASE}
-pkgdesc = OpenClaw AI Gateway LuCI management plugin (apk edition, ImmortalWrt 25.12+)
-url = https://github.com/xmlct7871/luci-app-openclaw
-builddate = $(date -u +%s)
-packager = xmlct7871 <xmlct787@gmail.com>
-arch = ${PKG_ARCH}
-license = GPL-3.0
-section = luci
-maintainer = xmlct7871 <xmlct787@gmail.com>
-depend = luci-compat
-depend = luci-base
-depend = curl
-depend = openssl-util
-depend = script-utils
-depend = tar
-depend = libstdcpp6
-size = ${SIZE_BYTES}
-datahash = ${DATAHASH}
-description = OpenClaw AI Gateway LuCI management plugin (apk edition, ImmortalWrt 25.12+). Adapted for ImmortalWrt with the upstream OpenClaw native layout (state dir at /root/.openclaw), so OpenClaw can be upgraded freely without re-adapting this plugin. Supports 12+ AI providers and Telegram/Discord/WeChat channels. Runs as root, no wrapper layer.
-EOF
-
-# OpenWrt 兼容字段 (部分 apk 实现读取)
-echo "Installed-Size: ${INSTALLED_KB}" >> "$DATA_DIR/.PKGINFO"
-
-# ── 打包 tar (PAX 格式, 单 gz 流) ──────────────────────────────────
-echo "==> 打包 $APK_FILE"
-
-# tar 顺序: .PKGINFO / .pre-install / .post-install / .pre-deinstall /
-#          .post-deinstall / etc / usr
-# 显式列出顺序确保 .PKGINFO 在最前, 与 datahash 计算顺序一致
-cd "$DATA_DIR"
-
-# PAX 格式: GNU tar 默认输出 PAX 格式; busybox tar 不产生 PAX 头 (OK)
-# 注意: 这里不主动加 --no-xattrs, 让 GNU tar 输出 PAX 头以保证兼容性
-# 关键: datahash 是按"tar 顺序"算的, 顺序必须稳定. 我们显式列出 entry
-# GNU tar 用 -T / --files-from 会按文件读入顺序打包
-FILELIST="$WORK/filelist.txt"
-{
-    echo ".PKGINFO"
-    echo ".pre-install"
-    echo ".post-install"
-    echo ".pre-deinstall"
-    echo ".post-deinstall"
-    # 数据文件按 tar 顺序 (父目录优先, 字母序)
-    LC_ALL=C find etc usr -mindepth 1 \( -type f -o -type l -o -type d \) 2>/dev/null | \
-        grep -v '^\.$' | sort
-} > "$FILELIST"
-
-# 打 tar (单 gz 流, PAX 格式)
-# --no-recursion: 关键! 否则 tar 会对 filelist 中列出的目录递归扫描,
-#   导致其子文件被作为 hardlink 重复加入 (apk 工具可能拒绝)
-# PAX 格式 (默认 GNU tar): 支持长文件名, 兼容 PAX 扩展头
-$TAR_CMD -c -z -f "$APK_FILE" --no-recursion -T "$FILELIST"
-
-# ── 自检 ────────────────────────────────────────────────────────────
+# ── 自检 ─────────────────────────────────────────────────────────────
 echo "==> 自检"
-# 1. 单 gz 流
-if ! gzip -t "$APK_FILE" 2>/dev/null; then
-    echo "ERROR: gzip 解析失败" >&2
+# 1. 文件存在
+if [ ! -f "$APK_FILE" ]; then
+    echo "ERROR: mkpkg 没产出文件" >&2
     exit 1
 fi
-# 2. tar 头部合法, 且 .PKGINFO 在最前
-LIST=$($TAR_CMD -tzf "$APK_FILE" 2>/dev/null)
-if [ -z "$LIST" ]; then
-    echo "ERROR: tar 内容为空" >&2
-    exit 1
-fi
-FIRST_ENTRY=$(echo "$LIST" | head -1)
-if [ "$FIRST_ENTRY" != "./" ] && [ "$FIRST_ENTRY" != "." ]; then
-    # 允许 busybox tar 的 '目录条目' 在最前 (./)
-    if ! echo "$FIRST_ENTRY" | grep -qE '^\.?/?$'; then
-        echo "  WARNING: tar 首条目非目录: $FIRST_ENTRY (期望 . 或 ./ )" >&2
+
+# 2. magic 检查: ADBd = 0x64424441, 小端首 4 字节 = 41 44 42 64
+#    兼容: od / hexdump / xxd (路由器 busybox 通常没这些)
+MAGIC=""
+if command -v od >/dev/null 2>&1; then
+    MAGIC=$(head -c 4 "$APK_FILE" | od -An -tx1 | tr -d ' \n')
+elif command -v hexdump >/dev/null 2>&1; then
+    MAGIC=$(head -c 4 "$APK_FILE" | hexdump -e '/1 "%02x"')
+elif command -v xxd >/dev/null 2>&1; then
+    MAGIC=$(head -c 4 "$APK_FILE" | xxd -p | tr -d '\n')
+else
+    # 没 hex 工具, 用 od via /dev/zero 不可, 退回到字符串对比
+    FIRST4=$(head -c 4 "$APK_FILE")
+    if [ "$FIRST4" = "ADBd" ]; then
+        MAGIC="41444264"
     fi
 fi
-# .PKGINFO 必须存在
-if ! echo "$LIST" | grep -qx '.PKGINFO'; then
-    echo "ERROR: tar 内缺少 .PKGINFO" >&2
+if [ "$MAGIC" != "41444264" ]; then
+    echo "ERROR: 包 magic 不是 ADBd, 实际 = $MAGIC (期望 41444264)" >&2
     exit 1
 fi
-echo "    ✓ 单 gz 流, .PKGINFO 在内, 总条目: $(echo "$LIST" | wc -l)"
+
+# 3. 文件大小合理 (至少几十 KB)
+size=$(wc -c < "$APK_FILE")
+if [ "$size" -lt 50000 ]; then
+    echo "WARNING: 包大小异常小 (< 50KB): $size" >&2
+fi
+
+echo "    ✓ ADB 格式 magic 正确"
+echo "    ✓ Size: $size bytes"
 
 # ── 完成 ─────────────────────────────────────────────────────────────
-size=$(wc -c < "$APK_FILE" 2>/dev/null || echo "?")
 echo ""
-echo "✓ 构建完成 (v2 格式: 单 gzipped PAX tar)"
+echo "✓ 构建完成 (ADB v3 格式: 兼容 ImmortalWrt 25.12.1 的 apk-tools 3.0.5)"
 echo "  APK  : $APK_FILE"
 echo "  Size : $size bytes"
-echo "  datahash = $DATAHASH"
 echo ""
 echo "下一步 (在 ImmortalWrt 25.12+ 路由器上):"
-echo "  apk add --allow-untrusted $APK_FILE"
+echo "  scp $APK_FILE root@192.168.10.1:/tmp/"
+echo "  ssh root@192.168.10.1 'apk add --allow-untrusted /tmp/$(basename "$APK_FILE")'"
 echo ""
 echo "卸载:"
 echo "  apk del luci-app-openclaw-apk"

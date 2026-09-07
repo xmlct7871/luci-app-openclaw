@@ -152,10 +152,10 @@ jobs:
 
             ### ImmortalWrt 25.12+ (apk)
 
-            上传 `luci-app-openclaw-apk_${{ needs.build.outputs.version }}-1_all.apk` 到路由器,然后:
+            上传 `luci-app-openclaw-apk_${{ needs.build.outputs.version }}-1.apk` 到路由器,然后:
 
             ```bash
-            apk add --allow-untrusted luci-app-openclaw-apk_${{ needs.build.outputs.version }}-1_all.apk
+            apk add --allow-untrusted luci-app-openclaw-apk_${{ needs.build.outputs.version }}-1.apk
             ```
 
             卸载:
