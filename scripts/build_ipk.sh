@@ -47,7 +47,7 @@ else
 fi
 
 PKG_NAME="luci-app-openclaw"
-PKG_VERSION="1.0.1"
+PKG_VERSION="1.0.2"
 PKG_RELEASE="1"
 PKG_ARCH="all"
 IPK_FILE="$OUT/${PKG_NAME}_${PKG_VERSION}-${PKG_RELEASE}_${PKG_ARCH}.ipk"

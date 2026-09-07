@@ -49,7 +49,7 @@ fi
 # ── 包元数据 ─────────────────────────────────────────────────────────────
 # 与 opkg 版区分: 包名带 -apk 后缀, 文件名同样带 -apk
 PKG_NAME="luci-app-openclaw-apk"
-PKG_VERSION="1.0.1"
+PKG_VERSION="1.0.2"
 PKG_RELEASE="1"
 PKG_ARCH="all"
 APK_FILE="$OUT/${PKG_NAME}_${PKG_VERSION}-${PKG_RELEASE}_${PKG_ARCH}.apk"

@@ -4,7 +4,7 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 
-## [Unreleased]
+## [1.0.2] - 2026-09-07
 
 ### 新增 apk 包 — 兼容 ImmortalWrt 25.12+ (apk 包管理器)
 
