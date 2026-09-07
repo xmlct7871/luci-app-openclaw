@@ -1,4 +1,4 @@
-name: Build IPK
+name: Build IPK & APK
 
 on:
   push:
@@ -13,9 +13,9 @@ on:
         default: ''
 
 jobs:
-  # ── 构建 IPK,产出 artifact 并把版本信息外抛给 release job ──
+  # ── 构建 IPK + APK, 产出 artifact 并把版本信息外抛给 release job ──
   build:
-    name: Build .ipk package
+    name: Build .ipk and .apk packages
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -47,25 +47,43 @@ jobs:
         run: |
           echo "${{ steps.version.outputs.version }}" > VERSION
           sed -i "s/^PKG_VERSION:=.*/PKG_VERSION:=${{ steps.version.outputs.version }}/" Makefile
+          # 同步更新 build_apk.sh 和 build_ipk.sh 里的硬编码 PKG_VERSION
+          sed -i "s/^PKG_VERSION=\"[^\"]*\"/PKG_VERSION=\"${{ steps.version.outputs.version }}\"/" scripts/build_ipk.sh
+          sed -i "s/^PKG_VERSION=\"[^\"]*\"/PKG_VERSION=\"${{ steps.version.outputs.version }}\"/" scripts/build_apk.sh
 
-      - name: Build .ipk package
+      - name: Build .ipk package (opkg / ImmortalWrt < 25.12)
         run: |
           chmod +x scripts/build_ipk.sh
-          # 第一个参数是 SRC_DIR (项目根),不传则脚本自动定位
           sh scripts/build_ipk.sh .
 
-      - name: Upload artifact
+      - name: Build .apk package (ImmortalWrt 25.12+ / apk)
+        run: |
+          chmod +x scripts/build_apk.sh
+          sh scripts/build_apk.sh .
+
+      - name: List built artifacts
+        run: ls -la dist/
+
+      - name: Upload .ipk artifact
         uses: actions/upload-artifact@v4
         with:
-          name: luci-app-openclaw-${{ steps.version.outputs.version }}
+          name: luci-app-openclaw-ipk-${{ steps.version.outputs.version }}
           path: dist/*.ipk
           retention-days: 30
           compression-level: 0
 
-  # ── 把 IPK 附到 GitHub Release,与源代码 zip/tar.gz 同页可供下载 ──
+      - name: Upload .apk artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: luci-app-openclaw-apk-${{ steps.version.outputs.version }}
+          path: dist/*.apk
+          retention-days: 30
+          compression-level: 0
+
+  # ── 把 IPK + APK 附到 GitHub Release, 与源代码 zip/tar.gz 同页可供下载 ──
   # 仅在推 tag 时触发 (workflow_dispatch 触发则不发布 release)
   release:
-    name: Attach IPK to GitHub Release
+    name: Attach packages to GitHub Release
     needs: build
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
@@ -75,11 +93,27 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Download IPK artifact
+      - name: Download .ipk artifact
         uses: actions/download-artifact@v4
         with:
-          name: luci-app-openclaw-${{ needs.build.outputs.version }}
+          name: luci-app-openclaw-ipk-${{ needs.build.outputs.version }}
           path: dist/
+
+      - name: Download .apk artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: luci-app-openclaw-apk-${{ needs.build.outputs.version }}
+          path: dist/
+
+      - name: Verify artifacts
+        run: |
+          echo "==> 发布产物:"
+          ls -la dist/
+          echo ""
+          echo "==> apk 包 PKGINFO 头部校验:"
+          if [ -f dist/*.apk ]; then
+            tar -xzOf dist/*.apk .PKGINFO | head -8 || true
+          fi
 
       - name: Extract release notes from CHANGELOG
         id: notes
@@ -95,7 +129,7 @@ jobs:
             echo "NOTES_EOF"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Create Release and attach IPK
+      - name: Create Release and attach packages
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.build.outputs.tag }}
@@ -108,14 +142,31 @@ jobs:
 
             ## 📥 安装
 
-            把 `luci-app-openclaw_${{ needs.build.outputs.version }}-1_all.ipk` 上传到路由器,然后:
+            ### ImmortalWrt < 25.12 (opkg)
+
+            上传 `luci-app-openclaw_${{ needs.build.outputs.version }}-1_all.ipk` 到路由器,然后:
 
             ```bash
             opkg install luci-app-openclaw_${{ needs.build.outputs.version }}-1_all.ipk
             ```
 
+            ### ImmortalWrt 25.12+ (apk)
+
+            上传 `luci-app-openclaw-apk_${{ needs.build.outputs.version }}-1_all.apk` 到路由器,然后:
+
+            ```bash
+            apk add --allow-untrusted luci-app-openclaw-apk_${{ needs.build.outputs.version }}-1_all.apk
+            ```
+
+            卸载:
+            ```bash
+            apk del luci-app-openclaw-apk
+            ```
+
             [使用文档](https://github.com/xmlct7871/luci-app-openclaw#readme) · [问题反馈](https://github.com/xmlct7871/luci-app-openclaw/issues)
-          files: dist/*.ipk
+          files: |
+            dist/*.ipk
+            dist/*.apk
           fail_on_unmatched_files: true
           draft: false
           prerelease: false

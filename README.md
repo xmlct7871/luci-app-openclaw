@@ -35,6 +35,15 @@
 
 ## 📦 安装
 
+> **ImmortalWrt 25.12+ 已将默认包管理器从 opkg 切换为 apk。** 本仓库同步发布两套安装包，按系统版本选择：
+>
+> | 包名 | 文件 | 适用系统 | 包管理器 |
+> |------|------|----------|----------|
+> | `luci-app-openclaw` | `luci-app-openclaw_${VER}-1_all.ipk` | ImmortalWrt < 25.12 / OpenWrt / iStoreOS | opkg |
+> | `luci-app-openclaw-apk` | `luci-app-openclaw-apk_${VER}-1_all.apk` | ImmortalWrt 25.12+ | apk |
+>
+> 两套包文件内容完全一致，**包名刻意区分**（`-apk` 后缀），避免在同一系统中产生冲突或歧义。
+
 ### 方式一：.run 自解压包（推荐）
 
 无需 SDK，适用于已安装好的系统。
@@ -46,13 +55,28 @@ wget "https://github.com/xmlct7871/luci-app-openclaw/releases/download/v${VER}/l
 sh "luci-app-openclaw_${VER}.run"
 ```
 
-### 方式二：.ipk 安装
+### 方式二：.ipk 安装（opkg / ImmortalWrt < 25.12）
 
 ```bash
 # 下载最新版本（自动获取版本号）
 VER=$(curl -sI "https://github.com/xmlct7871/luci-app-openclaw/releases/latest" 2>/dev/null | grep -i "location:" | sed 's/.*tag\/v\{0,1\}//' | tr -d '\r\n')
 wget "https://github.com/xmlct7871/luci-app-openclaw/releases/download/v${VER}/luci-app-openclaw_${VER}-1_all.ipk"
 opkg install "luci-app-openclaw_${VER}-1_all.ipk"
+```
+
+### 方式二点五：.apk 安装（ImmortalWrt 25.12+）
+
+```bash
+# 下载最新版本（自动获取版本号）
+VER=$(curl -sI "https://github.com/xmlct7871/luci-app-openclaw/releases/latest" 2>/dev/null | grep -i "location:" | sed 's/.*tag\/v\{0,1\}//' | tr -d '\r\n')
+wget "https://github.com/xmlct7871/luci-app-openclaw/releases/download/v${VER}/luci-app-openclaw-apk_${VER}-1_all.apk"
+apk add --allow-untrusted "luci-app-openclaw-apk_${VER}-1_all.apk"
+```
+
+卸载：
+
+```bash
+apk del luci-app-openclaw-apk
 ```
 
 ### 方式三：集成到固件编译
@@ -130,7 +154,7 @@ opkg install python3
 ## 已知说明
 
 - OpenClaw 的 diagnostic heartbeat 可能在日志中出现类似周期性探测记录。它不是一次真实用户对话请求；如需降低噪音，优先在 OpenClaw 配置或日志采集侧降低诊断日志级别，不建议直接修改模型调用逻辑。
-- 当前仓库提供源码、OpenWrt feeds 集成方式、本地 `.run` / `.ipk` 构建脚本入口；本次维护不自动生成 Release 产物。
+- 当前仓库提供源码、OpenWrt feeds 集成方式、本地 `.run` / `.ipk` / `.apk` 构建脚本入口；Release 由 CI 在推送 `v*` tag 时自动构建并上传。
 
 ## 📂 目录结构
 
@@ -155,9 +179,10 @@ luci-app-openclaw/
 │       ├── bin/openclaw-env          # 环境管理工具
 │       └── share/openclaw/           # 配置终端资源
 ├── scripts/
-│   └── build_ipk.sh                  # 本地 IPK 构建
+│   ├── build_ipk.sh                  # 本地 IPK 构建 (opkg)
+│   └── build_apk.sh                  # 本地 APK 构建 (ImmortalWrt 25.12+)
 └── .github/workflows/
-    └── build.yml                     # CI 中构建 IPK
+    └── build.yml                     # CI 中构建 IPK + APK
 ```
 
 ## 📂 运行时目录结构

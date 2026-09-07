@@ -4,6 +4,33 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 
+## [Unreleased]
+
+### 新增 apk 包 — 兼容 ImmortalWrt 25.12+ (apk 包管理器)
+
+ImmortalWrt 从 25.12 版本起将默认包管理器从 opkg 切换为 apk。仓库同步新增 `.apk` 包产物，按系统版本选用：
+
+| 包名 | 文件 | 适用系统 | 包管理器 |
+|------|------|----------|----------|
+| `luci-app-openclaw` | `luci-app-openclaw_${VER}-1_all.ipk` | ImmortalWrt < 25.12 / OpenWrt / iStoreOS | opkg |
+| `luci-app-openclaw-apk` | `luci-app-openclaw-apk_${VER}-1_all.apk` | ImmortalWrt 25.12+ | apk |
+
+两套包文件内容完全一致，**包名刻意区分**（`-apk` 后缀），避免在过渡期产生冲突或歧义。
+
+#### 新增
+
+- `scripts/build_apk.sh` — 本地构建 `.apk` 包，遵循 Alpine apk 格式（单层 gzipped tar + `.PKGINFO` + scriptlets）。
+- `.github/workflows/build.yml` — 同一 workflow 中并行构建 `.ipk` 和 `.apk`，分别上传为独立 artifact，Release 页面同时挂载两类产物。
+- `.gitignore` — 忽略 `*.apk` 构建产物。
+
+#### 安装命令
+
+```bash
+# ImmortalWrt 25.12+
+apk add --allow-untrusted luci-app-openclaw-apk_${VER}-1_all.apk
+apk del luci-app-openclaw-apk   # 卸载
+```
+
 ## [1.0.1] - 2026-07-17
 
 ### 启动链路精简 + 用户配置不再被静默重置
