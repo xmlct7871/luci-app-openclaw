@@ -306,6 +306,123 @@ detect_arch() {
 	esac
 }
 
+# ── 下载辅助:单 URL 断点续传 + 重试 ──────────────────────────────
+# 参数: $1=url  $2=dest_path  $3=download_log
+# 行为:
+#   - 使用 curl -C - 自动断点续传(已存在的 dest 文件会被作为 offset)
+#   - 失败后同 URL 重试 3 次(指数退避 2s/4s/8s)
+#   - curl/wget stderr 写到 $3,主流程可读
+#   - 返回 0=成功,1=所有重试都失败
+download_with_resume() {
+	local url="$1"
+	local dest="$2"
+	local logf="${3:-/tmp/openclaw-download.log}"
+	local attempt=0
+	local max_attempts=3
+	local backoff=2
+	local rc=1
+
+	# 部分旧版 curl 不支持 --retry-all-errors,先探测再决定参数
+	local curl_retry_args="--retry 3 --retry-delay 2"
+	if curl --help all 2>/dev/null | grep -q -- "--retry-all-errors"; then
+		curl_retry_args="--retry 3 --retry-delay 2 --retry-all-errors"
+	fi
+
+	while [ $attempt -lt $max_attempts ]; do
+		attempt=$((attempt + 1))
+		{
+			echo "─── attempt $attempt/$max_attempts @ $(date '+%H:%M:%S') ───"
+			echo "URL: $url"
+			echo "Dest: $dest"
+		} >> "$logf" 2>/dev/null
+
+		# 主:curl + 断点续传 + 内置重试
+		if command -v curl >/dev/null 2>&1; then
+			if curl -fSL --connect-timeout 15 --max-time 600 \
+					$curl_retry_args \
+					-C - -o "$dest" "$url" >> "$logf" 2>&1; then
+				rc=0
+				break
+			fi
+		# 兜底:busybox wget(不支持 -C,所以只能整个重下)
+		elif command -v wget >/dev/null 2>&1; then
+			# busybox wget 用 -T SECONDS;GNU wget 用 --timeout=SECONDS
+			if wget --help 2>&1 | grep -q -- "--timeout"; then
+				if wget -q --timeout=20 --tries=2 -O "$dest" "$url" >> "$logf" 2>&1; then
+					rc=0
+					break
+				fi
+			else
+				if wget -q -T 20 -O "$dest" "$url" >> "$logf" 2>&1; then
+					rc=0
+					break
+				fi
+			fi
+		else
+			echo "ERROR: curl/wget 均不可用" >> "$logf" 2>/dev/null
+			return 1
+		fi
+
+		log_warn "下载失败 (尝试 $attempt/$max_attempts),${backoff}s 后重试..."
+		sleep "$backoff" 2>/dev/null || true
+		backoff=$((backoff * 2))
+	done
+
+	return $rc
+}
+
+# ── 下载辅助:SHA256 校验 ────────────────────────────────────────
+# 参数: $1=tarball 路径  $2=mirror base URL(不含文件名,用于拉 SHASUMS256.txt)
+# 行为:
+#   - 从 ${base}/SHASUMS256.txt 解析本文件名对应的 sha256
+#   - 计算本地 sha256sum 比对
+#   - 找不到 SHASUMS256.txt → 跳过校验(返回 0,不阻塞安装)
+#   - 不匹配 → 删除文件并返回 1(让调用方重下)
+verify_node_checksum() {
+	local tarball="$1"
+	local base_url="$2"
+	local fname
+	fname=$(basename "$tarball")
+	local sums_url="${base_url}/SHASUMS256.txt"
+
+	# 没装 sha256sum 直接跳过
+	if ! command -v sha256sum >/dev/null 2>&1; then
+		log_warn "sha256sum 不可用,跳过校验"
+		return 0
+	fi
+
+	# 拉 SHASUMS256.txt 到临时文件
+	local sums_tmp="/tmp/node-SHASUMS256-$$.txt"
+	rm -f "$sums_tmp"
+	if ! curl -fsSL --connect-timeout 10 --max-time 30 \
+			-o "$sums_tmp" "$sums_url" 2>/dev/null; then
+		log_warn "无法获取 SHA256 列表 (${sums_url}),跳过校验"
+		rm -f "$sums_tmp"
+		return 0
+	fi
+
+	local expected
+	expected=$(awk -v f="$fname" '$2==f{print $1}' "$sums_tmp" 2>/dev/null | head -1)
+	rm -f "$sums_tmp"
+
+	if [ -z "$expected" ]; then
+		log_warn "SHA256 列表中未找到 $fname (镜像可能不含此版本),跳过校验"
+		return 0
+	fi
+
+	local actual
+	actual=$(sha256sum "$tarball" 2>/dev/null | awk '{print $1}')
+	if [ "$expected" != "$actual" ]; then
+		log_error "SHA256 校验失败"
+		log_error "  期望: $expected"
+		log_error "  实际: $actual"
+		return 1
+	fi
+
+	log_info "SHA256 校验通过"
+	return 0
+}
+
 download_node() {
 	local node_ver="$1"
 	local node_arch
@@ -339,15 +456,13 @@ download_node() {
 		echo ""
 		echo "=== 下载 Node.js v${node_ver} (${node_arch}, musl libc) ==="
 
-		if [ "$node_arch" = "linux-arm64" ]; then
-			# ARM64 musl: unofficial-builds 不提供,从项目自托管下载
-			mirror_list="${NODE_SELF_HOST}/${musl_tarball}"
-			mirror_list="$mirror_list ${NODE_MUSL_MIRROR}/v${node_ver}/${musl_tarball}"
-		else
-			# x64 musl: unofficial-builds 提供
-			mirror_list="${NODE_MUSL_MIRROR}/v${node_ver}/${musl_tarball}"
-			mirror_list="$mirror_list ${NODE_MIRROR_CN}/v${node_ver}/${musl_tarball}"
-		fi
+		# 官方 nodejs.org 不提供 musl 构建;unofficial-builds.nodejs.org
+		# 同时提供 x64 + arm64 + armv7 的 musl 预编译包,作为社区兜底。
+		# npmmirror.com 镜像通常不带 musl 文件名,放第三个回退位。
+		mirror_list="${NODE_MUSL_MIRROR}/v${node_ver}/${musl_tarball}"
+		mirror_list="$mirror_list ${NODE_MIRROR_CN}/v${node_ver}/${musl_tarball}"
+		# 项目自托管作为最后兜底(原账号失效场景)
+		mirror_list="$mirror_list ${NODE_SELF_HOST}/${musl_tarball}"
 	else
 		echo ""
 		echo "=== 下载 Node.js v${node_ver} (${node_arch}, glibc) ==="
@@ -356,34 +471,71 @@ download_node() {
 		mirror_list="$mirror_list ${NODE_MIRROR_CN}/v${node_ver}/${glibc_tarball}"
 	fi
 
-	# ── 逐个尝试下载 ──
+	# ── 逐个尝试下载(每个镜像内部 3 次重试 + 断点续传) ──
 	local downloaded=0
 	local tmp_file="/tmp/node-v${node_ver}.tar.xz"
 	local attempt=0
 	local total=$(echo "$mirror_list" | wc -w)
+	local dl_log="/tmp/openclaw-download.log"
+	rm -f "$dl_log"
 
 	for mirror_url in $mirror_list; do
 		attempt=$((attempt + 1))
-		echo "  正在从 ${mirror_url} 下载... (${attempt}/${total})"
-		if curl -fSL --connect-timeout 15 --max-time 300 -o "$tmp_file" "$mirror_url" 2>/dev/null || \
-		   wget -q --timeout=15 -O "$tmp_file" "$mirror_url" 2>/dev/null; then
-			local fsize=$(wc -c < "$tmp_file" 2>/dev/null || echo 0)
-			if [ "$fsize" -gt 5000000 ] 2>/dev/null; then
+		echo ""
+		echo "  [${attempt}/${total}] 镜像: ${mirror_url}"
+
+		# 跳过明显非 Node.js 路径的自托管(应对老 release 不含新版的情况,避免下 404 浪费时间)
+		# 这里通过 HEAD 看 Content-Length 是否 > 5MB 做快速判断
+		local cl
+		cl=$(curl -fsIL --connect-timeout 8 --max-time 15 \
+			"$mirror_url" 2>/dev/null \
+			| awk 'tolower($1)=="content-length:"{print $2}' | tail -1)
+		if [ -n "$cl" ] && [ "$cl" -lt 5000000 ] 2>/dev/null; then
+			log_warn "  Content-Length=$cl,文件过小,跳过此镜像"
+			rm -f "$tmp_file"
+			continue
+		fi
+
+		# 真实下载(支持断点续传 + 3 次内部重试)
+		if download_with_resume "$mirror_url" "$tmp_file" "$dl_log"; then
+			# 校验大小
+			local fsize
+			fsize=$(wc -c < "$tmp_file" 2>/dev/null || echo 0)
+			if [ "$fsize" -lt 5000000 ] 2>/dev/null; then
+				log_warn "  下载完成但文件过小 ($fsize bytes),跳过"
+				rm -f "$tmp_file"
+				continue
+			fi
+
+			# SHA256 校验(从同一镜像的 SHASUMS256.txt 拉)
+			# mirror URL 形如 https://host/path/node-v24.15.0-linux-x64-musl.tar.xz
+			# base URL = 去掉尾部文件名
+			local base_url="${mirror_url%/*}"
+			if verify_node_checksum "$tmp_file" "$base_url"; then
 				downloaded=1
 				break
 			else
-				log_warn "文件大小异常 (${fsize} bytes), 跳过"
+				log_warn "  校验失败,删除此镜像下载的部分文件,试下一个"
 				rm -f "$tmp_file"
 			fi
+		else
+			log_warn "  此镜像下载失败,试下一个"
+			# 保留 $tmp_file 残留以便下一个镜像续传(若服务端支持)
 		fi
-		log_warn "下载失败, 尝试备用镜像..."
 	done
 
 	if [ "$downloaded" -eq 0 ]; then
 		log_error "所有镜像均下载失败"
-		rm -f "$tmp_file"
+		log_error "详细错误日志(最近 30 行):"
+		if [ -f "$dl_log" ]; then
+			tail -30 "$dl_log" | sed 's/^/    /'
+		else
+			log_error "(无详细日志)"
+		fi
+		rm -f "$tmp_file" "$dl_log"
 		exit 1
 	fi
+	rm -f "$dl_log"
 
 	# 解压
 	echo "  正在解压到 ${NODE_BASE}..."
@@ -578,7 +730,7 @@ do_setup() {
 	fi
 
 	echo "╔══════════════════════════════════════════════════════════════╗"
-	echo "║            一万AI分享  OpenClaw 环境安装                     ║"
+	echo "║            OpenClaw 环境安装                     ║"
 	echo "╚══════════════════════════════════════════════════════════════╝"
 	echo ""
 	echo "  架构:       $(uname -m)"
@@ -660,7 +812,7 @@ do_check() {
 
 do_upgrade() {
 	echo "╔══════════════════════════════════════════════════════════════╗"
-	echo "║            一万AI分享  OpenClaw 升级                         ║"
+	echo "║              OpenClaw 升级                         ║"
 	echo "╚══════════════════════════════════════════════════════════════╝"
 	echo ""
 
@@ -808,7 +960,7 @@ do_setup_offline() {
 	fi
 
 	echo "╔══════════════════════════════════════════════════════════════╗"
-	echo "║       一万AI分享  OpenClaw 离线安装                          ║"
+	echo "║         OpenClaw 离线安装                          ║"
 	echo "╚══════════════════════════════════════════════════════════════╝"
 	echo ""
 	echo "  架构:       $(uname -m)"

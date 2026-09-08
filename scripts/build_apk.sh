@@ -281,15 +281,46 @@ fi
 echo "    ✓ ADB 格式 magic 正确"
 echo "    ✓ Size: $size bytes"
 
+# ── 可选: 给 APK 签名 (LuCI Web UI 上传需要) ──────────────────────────
+# LuCI 的 /usr/libexec/package-manager-call 调 `apk add` 时不加 --allow-untrusted
+# 要让 Web UI 上传直接通过, 必须给 APK 签一个路由器 /etc/apk/keys/ 认识的密钥.
+#
+# 用法:
+#   SIGN_KEY=/etc/apk/keys/openclaw-25.12.rsa sh scripts/build_apk.sh .
+#
+# 签名是 in-place 的 ADB 重写 (adbsign 内部解 mmap → ostream 重写),
+# 不能就地写回原文件 (会读到被截断的自身). 先写到 SIGNED_APK 再 mv.
+if [ -n "$SIGN_KEY" ] && [ -f "$SIGN_KEY" ]; then
+    SIGNED_APK="${APK_FILE%.apk}-signed.apk"
+    echo "==> 给 APK 签名 (key=$SIGN_KEY)"
+    # apk-tools 3.0.5 的 adbsign 是 in-place (读 mmap + ostream 写同名文件),
+    # 直接对原文件签会读到被 truncate 的自身, 导致 201KB -> 2.7KB.
+    # 解决: 先 cp 一份到 -signed.apk, 对那份签名 (cp 后 ostream 还没开)
+    cp "$APK_FILE" "$SIGNED_APK"
+    if $APK_STATIC adbsign --sign-key "$SIGN_KEY" "$SIGNED_APK" 2>&1 \
+        && [ "$(wc -c < "$SIGNED_APK")" -gt 50000 ]; then
+        APK_FILE="$SIGNED_APK"
+        echo "    ✓ 签名 APK: $APK_FILE ($(wc -c < "$APK_FILE") bytes)"
+    else
+        echo "WARNING: 签名失败或产出异常, 退回未签名 APK" >&2
+        rm -f "$SIGNED_APK"
+    fi
+fi
+
 # ── 完成 ─────────────────────────────────────────────────────────────
 echo ""
 echo "✓ 构建完成 (ADB v3 格式: 兼容 ImmortalWrt 25.12.1 的 apk-tools 3.0.5)"
 echo "  APK  : $APK_FILE"
-echo "  Size : $size bytes"
+echo "  Size : $(wc -c < "$APK_FILE") bytes"
 echo ""
 echo "下一步 (在 ImmortalWrt 25.12+ 路由器上):"
-echo "  scp $APK_FILE root@192.168.10.1:/tmp/"
-echo "  ssh root@192.168.10.1 'apk add --allow-untrusted /tmp/$(basename "$APK_FILE")'"
+if [ "$APK_FILE" = "${APK_FILE%.apk}-signed.apk" ] || [ -n "$SIGN_KEY" ] && [ -f "$SIGNED_APK" ]; then
+    echo "  scp $APK_FILE root@192.168.10.1:/tmp/"
+    echo "  ssh root@192.168.10.1 'apk add /tmp/$(basename "$APK_FILE")'    # 已签名, 无需 --allow-untrusted"
+else
+    echo "  scp $APK_FILE root@192.168.10.1:/tmp/"
+    echo "  ssh root@192.168.10.1 'apk add --allow-untrusted /tmp/$(basename "$APK_FILE")'"
+fi
 echo ""
 echo "卸载:"
 echo "  apk del luci-app-openclaw-apk"
