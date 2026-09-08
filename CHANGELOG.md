@@ -4,6 +4,35 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 
+## [1.0.3] - 2026-09-08
+
+### openclaw-env: 下载可靠性改造
+
+针对社区反馈"Node.js 下载失败导致环境装不上"的痛点，重写下载层。三个改动独立可关闭，全部默认开启。
+
+#### A. 断点续传 (`download_with_resume`)
+
+- 所有 Node.js tarball 下载走 `curl -C -`，断网/超时后**下次重试从已下载字节继续**，不再从 0 重来。
+- 适配 9KB/s 极端窄带场景（远端服务器节流、跨网高峰期）。
+- 保留 3 次重试 + 指数退避（2s → 4s → 8s），并探测 `curl --retry-all-errors` 支持。
+- 失败错误写 `/tmp/openclaw-download.log` 而不是直接丢弃，便于事后排查。
+
+#### B. SHA256 校验 (`verify_node_checksum`)
+
+- 下载完成后对照 `SHASUMS256.txt` 验哈希，半途下载的破损包会被立刻识别。
+- musl 镜像优先切换到 [unofficial-builds.nodejs.org](https://unofficial-builds.nodejs.org)（社区维护，提供 arm64-musl / armv7-musl 等官方未发的 musl 构建），原 `nodejs.org/dist` 和自托管镜像作为兜底。
+
+#### C. 错误日志落盘
+
+- 每次失败的镜像 URL + HTTP 状态码 + curl 错误描述追加到 `/tmp/openclaw-download.log`。
+- Web UI 和 SSH 终端里仍能看到精简提示；想看完整细节一条命令 `cat /tmp/openclaw-download.log`。
+
+#### 影响范围
+
+- 仅 `root/usr/bin/openclaw-env`，不动其他脚本和 UI。
+- 已安装用户升级后下次"运行环境安装"自动启用新逻辑，无须手动清缓存。
+- 安装成功率在窄带（< 50KB/s）和跨网高峰期预计显著提升。
+
 ## [1.0.2] - 2026-09-07
 
 ### 新增 apk 包 — 兼容 ImmortalWrt 25.12+ (apk 包管理器)

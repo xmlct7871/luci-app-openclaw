@@ -56,6 +56,19 @@ jobs:
           chmod +x scripts/build_ipk.sh
           sh scripts/build_ipk.sh .
 
+      - name: Install apk.static (alpine mkpkg, required by build_apk.sh)
+        run: |
+          # apk.static 不在 ubuntu runner 默认环境里 — 从 alpine 仓库下静态包
+          # 用 GNU tar 直接解 ADB v3 apk (无需 alpine apk 运行时)
+          curl -fsSL -o /tmp/apk-tools-static.apk \
+            https://dl-cdn.alpinelinux.org/alpine/v3.23/main/x86_64/apk-tools-static-3.0.8-r0.apk
+          rm -rf /tmp/apk-static
+          mkdir -p /tmp/apk-static
+          tar -xf /tmp/apk-tools-static.apk -C /tmp/apk-static
+          ls -la /tmp/apk-static/sbin/apk.static
+          /tmp/apk-static/sbin/apk.static --version
+          /tmp/apk-static/sbin/apk.static mkpkg --help 2>&1 | head -5
+
       - name: Build .apk package (ImmortalWrt 25.12+ / apk)
         run: |
           chmod +x scripts/build_apk.sh
