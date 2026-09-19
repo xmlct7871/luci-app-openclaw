@@ -2250,7 +2250,7 @@ reset_to_defaults() {
 				echo -e "  ${GREEN}   Gateway 已停止${NC}"
 
 				echo -e "  ${CYAN}[2/5] 备份当前配置...${NC}"
-				local backup_dir="${OC_STATE_DIR}/backups"
+				local backup_dir="/root"
 				local backup_ts=$(date +%Y%m%d_%H%M%S)
 				mkdir -p "$backup_dir"
 				if [ -f "$CONFIG_FILE" ]; then
@@ -2351,7 +2351,7 @@ backup_restore_menu() {
 	prompt_with_default "请选择" "1" backup_choice
 
 	# 备份目录 (openclaw backup create 输出到 CWD)
-	local backup_dir="${OC_STATE_DIR}/backups"
+	local backup_dir="/root"
 	mkdir -p "$backup_dir" 2>/dev/null
 
 	case "$backup_choice" in
@@ -2707,7 +2707,7 @@ advanced_menu() {
 				echo ""
 				echo -e "  ${CYAN}导入配置${NC}"
 				echo ""
-				local backup_dir="${OC_STATE_DIR}/backups"
+				local backup_dir="/root"
 				if [ -d "$backup_dir" ]; then
 					echo "  可用备份:"
 					ls -lt "$backup_dir"/*.json 2>/dev/null | head -5 | while read -r line; do
@@ -2774,7 +2774,7 @@ case "${1:-}" in
 		restart_gateway
 		;;
 	--backup)
-		bk_dir="${OC_STATE_DIR}/backups"
+		bk_dir="/root"
 		mkdir -p "$bk_dir" 2>/dev/null
 		echo -e "${CYAN}正在创建配置备份...${NC}"
 		cd "$bk_dir" && oc_cmd backup create --only-config --no-include-workspace 2>&1

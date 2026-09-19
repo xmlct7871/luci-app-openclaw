@@ -80,7 +80,7 @@ oc_load_paths() {
 	HOOKS_DIR="${STATE_DIR}/hooks"
 	LOGS_DIR="${STATE_DIR}/logs"
 	AGENTS_DIR="${STATE_DIR}/agents"
-	BACKUPS_DIR="${STATE_DIR}/backups"
+	BACKUPS_DIR="/root"
 	SECRETS_FILE="${STATE_DIR}/secrets.json"
 	NPM_PROJECTS_DIR="${EXT_DIR}/npm/projects"
 

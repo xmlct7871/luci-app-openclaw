@@ -1807,7 +1807,7 @@ async function handleReset() {
         try { await runCommand('/etc/init.d/openclaw', ['stop']); } catch {}
 
         console.log(`${C.cyan}[2/5] 备份当前配置...${C.reset}`);
-        const backupDir = `${OC_STATE_DIR}/backups`;
+        const backupDir = `/root`;
         const backupTs = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
         try {
           fs.copyFileSync(CONFIG_FILE, `${backupDir}/openclaw_${backupTs}.json`);
@@ -1857,7 +1857,7 @@ async function handleBackup() {
     if (!choice || choice.value === 'back') break;
 
     resetRenderCount();
-    const backupDir = `${OC_STATE_DIR}/backups`;
+    const backupDir = `/root`;
 
     switch (choice.value) {
       case 'create-config': {

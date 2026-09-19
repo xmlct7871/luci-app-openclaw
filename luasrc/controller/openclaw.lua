@@ -45,7 +45,7 @@ local function get_path_info(input)
 		workspace_dir = normalized .. "/workspace",
 		agents_dir = normalized .. "/agents",
 		logs_dir = normalized .. "/logs",
-		backups_dir = normalized .. "/backups",
+		backups_dir = "/root",
 	}
 end
 
@@ -853,9 +853,9 @@ function action_backup()
 		install_path, install_path, install_path, install_path, install_path, install_path
 	)
 
-	-- 备份目录 (openclaw backup create 输出到 CWD，需要 cd)
-	-- v2026.6.10: backups 直接在 state_dir 根
-	local backup_dir = install_path .. "/backups"
+	-- 备份目录 — 硬编码 /root (文件直接落在 /root 顶层, 不放子目录)
+	-- (历史原因: 2026.6.10 之前是 /root 顶层, 后被改到 state_dir, 现在回归)
+	local backup_dir = "/root"
 	local cd_prefix = "mkdir -p " .. backup_dir .. " && cd " .. backup_dir .. " && "
 
 	-- ── 辅助: 解析单个备份文件的 manifest 信息 ──
