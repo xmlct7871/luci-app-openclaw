@@ -4,7 +4,7 @@ local ENABLE_LUCI_UPGRADE = false -- 隐藏「检测升级」按钮 (controller 
 local sys = require "luci.sys"
 
 m = Map("openclaw", "OpenClaw AI 网关",
-	"OpenClaw 是一个 AI 编程代理网关，支持 GitHub Copilot、Claude、GPT、Gemini 等大模型以及 QQ、Telegram、Discord 等多种消息渠道。")
+	"OpenClaw 是 ImmortalWrt/OpenWrt 路由器的 AI 网关插件。把 AI 模型能力部署到路由器上，7×24 在线、本地可控，适合作为家庭或办公网络的 AI 入口。")
 
 -- 隐藏底部的「保存并应用」「保存」「复位」按钮 (本页无可编辑的 UCI 选项)
 m.pageaction = false

@@ -4,6 +4,24 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 
+## [1.0.5] - 2026-09-19
+
+### Node.js 默认版本升至 24.20.0
+
+OpenClaw 最新版要求 Node.js ≥ 24.16.0，原安装脚本下载的 24.15.0 已不满足。
+
+- `openclaw-env` 默认版本 `NODE_VERSION_V2`: **24.15.0 → 24.20.0**
+- `OC_NODE_MIN_VERSION` 校验门槛: **22.19.0 → 24.16.0**
+- 旧备份恢复后被 `tar --strip-components` 还原的旧 Node 目录覆盖问题需手动升级到 24.20.0 才能正常启动 OpenClaw 最新版 — 本次默认下载目标已对齐。
+
+### LuCI 页面描述改写
+
+基础页说明从上游通用描述改为面向路由器的本地化版本:
+
+> OpenClaw 是 ImmortalWrt/OpenWrt 路由器的 AI 网关插件。把 AI 模型能力部署到路由器上，7×24 在线、本地可控，适合作为家庭或办公网络的 AI 入口。
+
+强调"装到路由器上"和"7×24 在线、本地可控"，让用户在 LuCI 页面上一眼看出本插件的安装位置和适用场景。
+
 ## [1.0.3] - 2026-09-08
 
 ### openclaw-env: 下载可靠性改造

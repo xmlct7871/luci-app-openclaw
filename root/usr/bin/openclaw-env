@@ -21,13 +21,13 @@
 set -e
 
 # ── Node.js 版本策略 ──
-# V2: 当前推荐版本,用于 OpenClaw v2026.6.x (要求 >= 22.19.0,使用 24.15.0 确保兼容)
+# V2: 当前推荐版本,用于 OpenClaw 最新版 (要求 >= 24.16.0,使用 24.20.0 确保兼容)
 # V1: 旧版兼容,用于 OpenClaw v2026.3.8 及更早版本
-NODE_VERSION_V2="24.15.0"
+NODE_VERSION_V2="24.20.0"
 NODE_VERSION_V1="22.15.1"
 NODE_VERSION="${NODE_VERSION:-${NODE_VERSION_V2}}"
 OC_TESTED_VERSION="2026.6.10"
-OC_NODE_MIN_VERSION="${OC_NODE_MIN_VERSION:-22.19.0}"
+OC_NODE_MIN_VERSION="${OC_NODE_MIN_VERSION:-24.16.0}"
 OC_VERSION="${OC_VERSION:-}"
 
 [ -r /usr/libexec/openclaw-paths.sh ] && . /usr/libexec/openclaw-paths.sh
