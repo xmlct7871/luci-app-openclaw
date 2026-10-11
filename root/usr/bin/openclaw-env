@@ -26,8 +26,8 @@ set -e
 NODE_VERSION_V2="24.20.0"
 NODE_VERSION_V1="22.15.1"
 NODE_VERSION="${NODE_VERSION:-${NODE_VERSION_V2}}"
-OC_TESTED_VERSION="2026.6.10"
 OC_NODE_MIN_VERSION="${OC_NODE_MIN_VERSION:-24.16.0}"
+# OC_VERSION 留空或 =latest 走 npm @latest,=stable 等同 latest,=x.y.z 锁定具体版本
 OC_VERSION="${OC_VERSION:-}"
 
 [ -r /usr/libexec/openclaw-paths.sh ] && . /usr/libexec/openclaw-paths.sh
@@ -230,7 +230,17 @@ probe_install_root() {
 
 cleanup_partial_install() {
 	# 只在确认目标是规范化后的 openclaw state dir 时清理,避免误删用户目录
+	# 安全护栏:dir 已包含真实用户数据(openclaw.json 或 agents/ 或 logs/)时,
+	# **不**清理,只清 setup 产生的临时文件,避免破坏已有环境。
 	if command -v oc_safe_openclaw_root >/dev/null 2>&1 && oc_safe_openclaw_root "$OC_INSTALL_PATH"; then
+		if [ -f "${OC_INSTALL_PATH}/openclaw.json" ] || \
+		   [ -d "${OC_INSTALL_PATH}/agents" ] || \
+		   [ -d "${OC_INSTALL_PATH}/logs" ] || \
+		   [ -d "${OC_INSTALL_PATH}/workspace" ]; then
+			log_warn "安装失败,但 ${OC_INSTALL_PATH} 已含用户数据(openclaw.json / agents / logs / workspace),**不清理**"
+			log_warn "已保留现有数据。错误排查后请用 'openclaw-env upgrade' 或 LuCI 重装"
+			return 0
+		fi
 		log_warn "安装失败,清理未完成的运行目录: $OC_INSTALL_PATH"
 		rm -rf "$OC_INSTALL_PATH" 2>/dev/null || true
 		[ -d /overlay/upper ] && rm -rf "/overlay/upper${OC_INSTALL_PATH}" 2>/dev/null || true
@@ -599,16 +609,18 @@ install_openclaw() {
 	echo "=== 安装 OpenClaw ==="
 
 	# 确定安装版本
-	local oc_pkg="openclaw"
-	if [ -z "$OC_VERSION" ] || [ "$OC_VERSION" = "stable" ]; then
-		oc_pkg="openclaw@${OC_TESTED_VERSION}"
-		log_info "默认稳定版: v${OC_TESTED_VERSION}"
-	elif [ "$OC_VERSION" = "latest" ]; then
-		oc_pkg="openclaw@latest"
-		log_info "安装 npm latest 稳定标签版本"
+	# 默认: openclaw@latest (npm 仓库最新稳定版)
+	# 显式 OC_VERSION=stable / OC_VERSION=<x.y.z> 仍可指定
+	local oc_pkg="openclaw@latest"
+	if [ -n "$OC_VERSION" ] && [ "$OC_VERSION" != "latest" ]; then
+		if [ "$OC_VERSION" = "stable" ]; then
+			log_info "OC_VERSION=stable 等同 latest, 安装 npm latest 稳定标签版本"
+		else
+			oc_pkg="openclaw@${OC_VERSION}"
+			log_info "指定版本: v${OC_VERSION}"
+		fi
 	else
-		oc_pkg="openclaw@${OC_VERSION}"
-		log_info "指定版本: v${OC_VERSION}"
+		log_info "默认安装 npm latest 稳定标签版本"
 	fi
 
 	local libc_type
@@ -624,8 +636,15 @@ install_openclaw() {
 	# 检查 git 是否可用
 	if ! command -v git >/dev/null 2>&1; then
 		log_warn "未检测到 git, 正在尝试安装..."
-		opkg update >/dev/null 2>&1
-		opkg install git git-http 2>&1 | tail -3 || true
+		# 探测包管理器:apk (ImmortalWrt 25.12+) 优先, 否则 opkg (传统)
+		if command -v apk >/dev/null 2>&1; then
+			apk add --no-cache git 2>&1 | tail -3 || true
+		elif command -v opkg >/dev/null 2>&1; then
+			opkg update >/dev/null 2>&1
+			opkg install git git-http 2>&1 | tail -3 || true
+		else
+			log_warn "未检测到 apk/opkg 包管理器,跳过 git 自动安装"
+		fi
 		if command -v git >/dev/null 2>&1; then
 			log_info "git 安装成功"
 		else
@@ -735,10 +754,10 @@ do_setup() {
 	echo ""
 	echo "  架构:       $(uname -m)"
 	echo "  Node 版本:  v${node_ver}"
-	if [ -n "$OC_VERSION" ]; then
-		echo "  OpenClaw:   v${OC_VERSION} (稳定版)"
+	if [ -n "$OC_VERSION" ] && [ "$OC_VERSION" != "latest" ]; then
+		echo "  OpenClaw:   v${OC_VERSION} (指定版本)"
 	else
-		echo "  OpenClaw:   v${OC_TESTED_VERSION} (默认稳定版)"
+		echo "  OpenClaw:   npm latest (默认最新)"
 	fi
 	echo "  安装路径:   ${OC_INSTALL_PATH}"
 	echo "  数据路径:   ${OC_INSTALL_PATH}"
@@ -842,9 +861,14 @@ do_upgrade() {
 
 	echo "=== 正在升级 OpenClaw ==="
 	echo ""
-	local target_pkg="openclaw@${OC_TESTED_VERSION}"
-	[ "$OC_VERSION" = "latest" ] && target_pkg="openclaw@latest"
-	[ -n "$OC_VERSION" ] && [ "$OC_VERSION" != "latest" ] && [ "$OC_VERSION" != "stable" ] && target_pkg="openclaw@${OC_VERSION}"
+	local target_pkg="openclaw@latest"
+	if [ -n "$OC_VERSION" ] && [ "$OC_VERSION" != "latest" ]; then
+		if [ "$OC_VERSION" = "stable" ]; then
+			: # stable 等同 latest
+		else
+			target_pkg="openclaw@${OC_VERSION}"
+		fi
+	fi
 	echo "目标版本: ${target_pkg#openclaw@}"
 	"$NPM_BIN" install -g "$target_pkg" --prefix="$NODE_BASE" $install_flags 2>&1
 

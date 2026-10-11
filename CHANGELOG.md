@@ -4,6 +4,29 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 
+## [1.0.6] - 2026-10-11
+
+### 关键修复:setup 失败不再误删用户数据
+
+`openclaw-env setup` 失败时,旧版会**直接 `rm -rf` 整个 `/root/.openclaw`**,导致 Node.js、OpenClaw 配置、agent auth store、用户会话全部丢失。**当 state dir 已经包含用户数据(`openclaw.json` / `agents/` / `logs/` / `workspace/`)时,cleanup 直接跳过**,只保留数据,留给用户后续排查或 `openclaw-env upgrade` 重试。
+
+### 包管理器探测:适配 ImmortalWrt 25.12+ (apk)
+
+`install_openclaw` 检查 git 时硬编码 `opkg install`,在 ImmortalWrt 25.12+ (apk 包管理器) 上静默失败 → 后续 npm install 仍可能异常退出 → trap 触发 cleanup → 数据丢失。
+
+修复:探测 `apk`(优先) / `opkg`(兜底) / 都没有则跳过,不再假定环境一定是 opkg。
+
+### 默认版本策略:始终 latest,不再硬编码 `OC_TESTED_VERSION`
+
+旧版用 `OC_TESTED_VERSION="2026.6.10"` 作"默认稳定版",但 OpenClaw 上游迭代极快,硬编码很快过期 → 用户升级时被锁在老版本。
+
+修复:默认走 `openclaw@latest`(npm 仓库最新稳定版);`OC_VERSION=stable` 等同 latest;`OC_VERSION=<x.y.z>` 仍可锁定。同步去掉 `OC_TESTED_VERSION` 死变量、`do_upgrade` 也走同一逻辑。
+
+### 影响范围
+
+- 仅 `root/usr/bin/openclaw-env`,不动 IPK/APK 打包脚本或 UI。
+- 已升级用 v1.0.4/1.0.5 的路由器下次 `setup` 触发时:`openclaw.json` / `agents/` 等数据**永远不会被误清**。
+
 ## [1.0.5] - 2026-09-19
 
 ### Node.js 默认版本升至 24.20.0
