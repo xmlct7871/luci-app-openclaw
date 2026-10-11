@@ -4,6 +4,39 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 
+## [1.0.8] - 2026-10-12
+
+### 关键修复:即使 doctor --fix 卡死,网关也能正常启动
+
+v1.0.7 修复了 EX_CONFIG 死循环,但实测发现 OpenClaw 2026.10.1 的 `doctor --fix`
+在路由器(无 TTY / procd 环境)下会进入 TUI 死锁,**35+ 秒后超时失败**,期间
+`start_service` 整条链路被卡住 → 网关永远起不来。
+
+修复:在 `_run_config_migration` 之前新增 `_cleanup_deprecated_config()` 函数,
+用 Node.js 同步直接删除 `allowInsecureAuth` 和 `dangerouslyDisableDeviceAuth`
+这两个已知废弃字段,与 `doctor --fix` 完全独立。即使后者卡死/超时,前面的直接
+清理已经把网关启动所必需的 schema 问题解决,网关能正常起来。其它迁移(如
+tier-eval 合并)仍由 doctor --fix 处理。
+
+清理仍由 `_oc_per_version_cleanup_pending` 控制,每个 OpenClaw 版本只跑一次,
+不会影响正常启动速度。
+
+### 默认版本从 `@latest` 锁到 `2026.10.1`
+
+OpenClaw 上游迭代很快,`@latest` 经常引入未测试的 schema 字段变更(这次就是
+2026.10.1 移除 `allowInsecureAuth` 触发 EX_CONFIG 78)。改成默认安装
+`openclaw@2026.10.1`(已经过完整启动验证的稳定版),`OC_VERSION=latest` /
+`OC_VERSION=stable` 仍可拉最新版,`OC_VERSION=<x.y.z>` 锁定任意版本。
+
+升级流程(`openclaw-env upgrade`)同步改用相同默认。
+
+### 影响范围
+
+- `root/etc/init.d/openclaw`: 加 `_cleanup_deprecated_config` 函数,gated by
+  `_oc_per_version_cleanup_pending`,每次 OpenClaw 升级时跑一次。
+- `root/usr/bin/openclaw-env`: 引入 `OC_DEFAULT_VERSION="2026.10.1"`,
+  `install_openclaw` 与 `do_upgrade` 默认走它。
+
 ## [1.0.7] - 2026-10-12
 
 ### 关键修复:OpenClaw 2026.10.1+ 配置迁移死循环(EX_CONFIG 退出码 78)

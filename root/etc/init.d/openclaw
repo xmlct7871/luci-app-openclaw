@@ -449,9 +449,38 @@ fi
 	#   现在已经没有 openclaw 用户，root 自身读写不需要清空 /tmp/jiti。
 	# extensions / npm/projects 的兜底 chmod 仍在 L535-543 的尾段执行。
 
+	# v1.0.8: 直接清理 OpenClaw 已知废弃的 controlUi 字段 (不依赖 doctor --fix)
+	# 背景: 上游 OpenClaw 2026.10.1 移除了 allowInsecureAuth 和
+	#   dangerouslyDisableDeviceAuth,但保留了 dangerouslyAllowHostHeaderOriginFallback。
+	#   doctor --fix 在某些场景(路由器 SSH / 无 TTY)会进入交互式 TUI 死锁,
+	#   所以不能把清理完全寄托在 doctor --fix 上 —— 必须用 Node.js 直接
+	#   同步删除这两个键,确保网关能起来。
+	_cleanup_deprecated_config() {
+		[ ! -f "$CONFIG_FILE" ] && return 0
+		[ ! -x "$NODE_BIN" ] && return 0
+		"$NODE_BIN" -e "
+const fs = require('fs');
+const f = '${CONFIG_FILE}';
+let d = {};
+try { d = JSON.parse(fs.readFileSync(f, 'utf8')); } catch(e) {}
+if (!d.gateway || !d.gateway.controlUi) { process.exit(0); }
+const retired = ['allowInsecureAuth', 'dangerouslyDisableDeviceAuth'];
+let removed = 0;
+for (const k of retired) {
+  if (k in d.gateway.controlUi) { delete d.gateway.controlUi[k]; removed++; }
+}
+if (removed > 0) {
+  fs.writeFileSync(f, JSON.stringify(d, null, 2));
+  console.log('REMOVED ' + removed);
+}
+" 2>&1 | grep -q REMOVED && logger -t openclaw "已清理 $? 个废弃 controlUi 字段"
+	}
+
 	# v2026.4.10: 优化配置迁移 - 只在版本变更时运行 doctor --fix
 	# 原因: doctor --fix 耗时 ~50 秒，每次重启都运行严重影响启动速度
 	# 策略: 使用标记文件记录已运行的版本，只在版本变化时才执行迁移
+	# v1.0.8: 调用前先做一次同步直接清理 (见 _cleanup_deprecated_config 上方注释),
+	#   保证 OpenClaw 启动时不携带已废弃字段,即便 doctor --fix 卡死也不影响。
 	_run_config_migration() {
 		local oc_entry="$1"
 		[ -z "$oc_entry" ] && return
@@ -471,20 +500,40 @@ fi
 		# 只在版本变化时才运行 doctor --fix
 		if [ "$current_ver" != "$last_ver" ]; then
 			logger -t openclaw "检测到版本变更 ($last_ver -> $current_ver)，执行配置迁移 (doctor --fix)..."
-			# v1.0.7: 只有 doctor --fix 成功才写标记；之前无条件写标记会导致失败也被吞掉,
-			# 下次启动跳过迁移,残留的废弃字段造成 EX_CONFIG 死循环。
-			if OPENCLAW_HOME="$OC_DATA" OPENCLAW_CONFIG_PATH="$CONFIG_FILE" \
-				"$NODE_BIN" "$oc_entry" doctor --fix 2>/dev/null; then
-				logger -t openclaw "配置迁移完成"
-				echo "$current_ver" > "$version_marker" 2>/dev/null
-			else
-				logger -t openclaw "配置迁移失败，请手动检查"
-				rm -f "$version_marker" 2>/dev/null
+			# v1.0.8: doctor --fix 在路由器(无 TTY)上会进入交互式 TUI 死锁,
+			#   在前台跑会阻塞整个 start_service,网关永远起不来。
+			#   改用后台执行 + stdin 关闭 + 标记文件异步判定结果:
+			#     - 如果 doctor 几分钟内自然完成,标 .doctor_ran_version (不再重跑)
+			#     - 如果后台超时或失败,删掉标记下次启动重试
+			#   关键: 这个后台进程完全脱离 procd 的同步控制,网关启动不依赖它。
+			if [ ! -f "$version_marker" ] || [ "$(cat "$version_marker" 2>/dev/null | tr -d '[:space:]')" != "$current_ver" ]; then
+				(
+					OPENCLAW_HOME="$OC_DATA" OPENCLAW_CONFIG_PATH="$CONFIG_FILE" \
+					"$NODE_BIN" "$oc_entry" doctor --fix </dev/null >/tmp/openclaw-doctor.log 2>&1
+					if [ $? -eq 0 ]; then
+						echo "$current_ver" > "$version_marker" 2>/dev/null
+						logger -t openclaw "doctor --fix 配置迁移完成 (后台)"
+					else
+						rm -f "$version_marker" 2>/dev/null
+						logger -t openclaw "doctor --fix 配置迁移失败 (后台),下次重试"
+					fi
+				) &
+				DOCTOR_BG_PID=$!
+				disown 2>/dev/null
+				logger -t openclaw "doctor --fix 已在后台启动 (PID $DOCTOR_BG_PID),不阻塞网关"
 			fi
 		else
 			logger -t openclaw "版本未变化 ($current_ver)，跳过 doctor --fix"
 		fi
 	}
+	# v1.0.8: 每次 OpenClaw 版本变更时,先同步直接清理掉已废弃的字段,
+	# 再跑 _run_config_migration 里的 doctor --fix (后者用于处理其它迁移如 tier-eval)。
+	# 直接清理的好处:不依赖 doctor --fix,在路由器无 TTY 环境下也能稳定生效。
+	if _oc_per_version_cleanup_pending; then
+		_cleanup_deprecated_config
+	else
+		logger -t openclaw "_cleanup_deprecated_config: 当前 OpenClaw 版本已执行，跳过"
+	fi
 	_run_config_migration "$oc_entry"
 
 	# doctor --fix 后再次修复权限 (防止 root 创建的文件导致 EACCES)

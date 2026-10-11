@@ -27,7 +27,14 @@ NODE_VERSION_V2="24.20.0"
 NODE_VERSION_V1="22.15.1"
 NODE_VERSION="${NODE_VERSION:-${NODE_VERSION_V2}}"
 OC_NODE_MIN_VERSION="${OC_NODE_MIN_VERSION:-24.16.0}"
-# OC_VERSION 留空或 =latest 走 npm @latest,=stable 等同 latest,=x.y.z 锁定具体版本
+# v1.0.8: 默认安装已调试稳定的 OpenClaw 版本,而不是每次跟 @latest。
+# 理由: OpenClaw 上游迭代很快,@latest 经常引入未知的 schema/字段变更,
+# 比如 2026.10.1 移除了 allowInsecureAuth / dangerouslyDisableDeviceAuth,
+# 触发 EX_CONFIG (退出码 78) 启动崩溃。锁定 2026.10.1 这版是当前
+# 经过完整启动测试的稳定版;新版本需等待充分测试后再跟进。
+# 显式 OC_VERSION=latest / OC_VERSION=stable 仍可拉最新版,
+# OC_VERSION=<x.y.z> 锁定任意版本。
+OC_DEFAULT_VERSION="2026.10.1"
 OC_VERSION="${OC_VERSION:-}"
 
 [ -r /usr/libexec/openclaw-paths.sh ] && . /usr/libexec/openclaw-paths.sh
@@ -609,18 +616,20 @@ install_openclaw() {
 	echo "=== 安装 OpenClaw ==="
 
 	# 确定安装版本
-	# 默认: openclaw@latest (npm 仓库最新稳定版)
-	# 显式 OC_VERSION=stable / OC_VERSION=<x.y.z> 仍可指定
-	local oc_pkg="openclaw@latest"
+	# 默认: openclaw@<OC_DEFAULT_VERSION> (调试通过的稳定版, 见上方注释)
+	# 显式 OC_VERSION=latest / OC_VERSION=stable 走 npm @latest
+	# 显式 OC_VERSION=<x.y.z> 锁定具体版本
+	local oc_pkg="openclaw@${OC_DEFAULT_VERSION}"
 	if [ -n "$OC_VERSION" ] && [ "$OC_VERSION" != "latest" ]; then
 		if [ "$OC_VERSION" = "stable" ]; then
 			log_info "OC_VERSION=stable 等同 latest, 安装 npm latest 稳定标签版本"
+			oc_pkg="openclaw@latest"
 		else
 			oc_pkg="openclaw@${OC_VERSION}"
 			log_info "指定版本: v${OC_VERSION}"
 		fi
 	else
-		log_info "默认安装 npm latest 稳定标签版本"
+		log_info "默认安装调试通过版本 v${OC_DEFAULT_VERSION} (稳定)"
 	fi
 
 	local libc_type
@@ -861,10 +870,11 @@ do_upgrade() {
 
 	echo "=== 正在升级 OpenClaw ==="
 	echo ""
-	local target_pkg="openclaw@latest"
+	# v1.0.8: 升级默认走调试通过版本,除非显式 OC_VERSION=latest/stable/<x.y.z>
+	local target_pkg="openclaw@${OC_DEFAULT_VERSION}"
 	if [ -n "$OC_VERSION" ] && [ "$OC_VERSION" != "latest" ]; then
 		if [ "$OC_VERSION" = "stable" ]; then
-			: # stable 等同 latest
+			target_pkg="openclaw@latest"
 		else
 			target_pkg="openclaw@${OC_VERSION}"
 		fi
