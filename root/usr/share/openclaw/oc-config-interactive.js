@@ -1749,8 +1749,7 @@ async function handleReset() {
           jsonSet('gateway.port', 18789);
           jsonSet('gateway.bind', 'lan');
           jsonSet('gateway.mode', 'local');
-          jsonSet('gateway.controlUi.allowInsecureAuth', true);
-          jsonSet('gateway.controlUi.dangerouslyDisableDeviceAuth', true);
+          // v1.0.7: 移除 allowInsecureAuth / dangerouslyDisableDeviceAuth (OpenClaw 2026.10.1+ 已废弃)
           jsonSet('gateway.controlUi.dangerouslyAllowHostHeaderOriginFallback', true);
           jsonSet('gateway.tailscale.mode', 'off');
           console.log(`\n${C.green}✅ 网关设置已恢复默认${C.reset}\n`);
@@ -1828,8 +1827,7 @@ async function handleReset() {
         jsonSet('gateway.mode', 'local');
         jsonSet('gateway.auth.mode', 'token');
         jsonSet('gateway.auth.token', newToken);
-        jsonSet('gateway.controlUi.allowInsecureAuth', true);
-        jsonSet('gateway.controlUi.dangerouslyDisableDeviceAuth', true);
+        // v1.0.7: 移除 allowInsecureAuth / dangerouslyDisableDeviceAuth (OpenClaw 2026.10.1+ 已废弃)
         jsonSet('gateway.controlUi.dangerouslyAllowHostHeaderOriginFallback', true);
         jsonSet('gateway.tailscale.mode', 'off');
         jsonSet('acp.dispatch.enabled', false);

@@ -4,6 +4,29 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 
+## [1.0.7] - 2026-10-12
+
+### 关键修复:OpenClaw 2026.10.1+ 配置迁移死循环(EX_CONFIG 退出码 78)
+
+`init.d/openclaw` 的配置初始化路径有三个互相叠加的 bug,导致路由器升级到 OpenClaw 2026.10.1+ 后**永远无法启动**:
+
+1. `sync_uci_to_json` 每次 start 都无条件往 `openclaw.json` 写入 `allowInsecureAuth=true` 和 `dangerouslyDisableDeviceAuth=true`。这两个键在 2026.10.1 已被上游移除(`allowInsecureAuth` 是未识别键,`dangerouslyDisableDeviceAuth` 直接废除),任何保留它们的 JSON 都会被 gateway 拒掉,触发 EX_CONFIG(78)。
+2. `_run_config_migration` 跑 `doctor --fix` 后**无条件写 `.doctor_ran_version` 标记**——即使 doctor 因为这些键失败,标记也会被写入,下次启动直接跳过迁移,死锁。
+3. `_ensure_critical_config` 在 doctor 删掉这些键之后又把它们写回去,把 doctor 的工作成果清零。
+
+三段叠加效果:**doctor 删 → 输入立刻被允许/强制重新注入 → doctor 再删 → 失败被吞 → 启动崩溃 → procd 死循环重启**。
+
+修复(三处协同):
+
+- `sync_uci_to_json`: 删掉对 `allowInsecureAuth` / `dangerouslyDisableDeviceAuth` 的强制写入,只保留仍然有效的 `dangerouslyAllowHostHeaderOriginFallback`。
+- `_ensure_critical_config`: 同上,只保留 `dangerouslyAllowHostHeaderOriginFallback`。
+- `_run_config_migration`: 把 `echo "$current_ver" > .doctor_ran_version` 移到 `doctor --fix` 成功分支里;失败时主动 `rm -f` 标记,下次启动重试迁移。
+
+### 影响范围
+
+- 仅 `root/etc/init.d/openclaw`,不动打包脚本、UI 或 `openclaw-env`。
+- 已经卡在 EX_CONFIG 死循环的路由器:在 LuCI 升级到 v1.0.7 后,`openclaw-env doctor` 跑一次清掉残留键,服务即可正常启动。
+
 ## [1.0.6] - 2026-10-11
 
 ### 关键修复:setup 失败不再误删用户数据

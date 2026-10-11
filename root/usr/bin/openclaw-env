@@ -949,7 +949,8 @@ do_factory_reset() {
 		local new_token
 		new_token=$(head -c 24 /dev/urandom | hexdump -e '24/1 "%02x"' 2>/dev/null || dd if=/dev/urandom bs=24 count=1 2>/dev/null | od -An -tx1 | tr -d ' \n' | head -c 48)
 		_JS_KEY="gateway.port" _JS_VAL="18789" "$NODE_BIN" -e "const fs=require('fs');let d={};try{d=JSON.parse(fs.readFileSync('${config_file}','utf8'));}catch(e){}const ks=process.env._JS_KEY.split('.');let o=d;for(let i=0;i<ks.length-1;i++){if(!o[ks[i]]||typeof o[ks[i]]!=='object')o[ks[i]]={};o=o[ks[i]];}let v=process.env._JS_VAL;try{v=JSON.parse(v);}catch(e){}o[ks[ks.length-1]]=v;fs.writeFileSync('${config_file}',JSON.stringify(d,null,2));" 2>/dev/null
-		for kv in "gateway.bind=lan" "gateway.mode=local" "gateway.auth.mode=token" "gateway.auth.token=${new_token}" "gateway.controlUi.allowInsecureAuth=true" "gateway.controlUi.dangerouslyDisableDeviceAuth=true" "gateway.controlUi.dangerouslyAllowHostHeaderOriginFallback=true" "gateway.tailscale.mode=off" "acp.dispatch.enabled=false" "tools.profile=coding"; do
+		# v1.0.7: 移除已废弃的 allowInsecureAuth / dangerouslyDisableDeviceAuth (OpenClaw 2026.10.1+)
+		for kv in "gateway.bind=lan" "gateway.mode=local" "gateway.auth.mode=token" "gateway.auth.token=${new_token}" "gateway.controlUi.dangerouslyAllowHostHeaderOriginFallback=true" "gateway.tailscale.mode=off" "acp.dispatch.enabled=false" "tools.profile=coding"; do
 			local k="${kv%%=*}" v="${kv#*=}"
 			_JS_KEY="$k" _JS_VAL="$v" "$NODE_BIN" -e "const fs=require('fs');let d={};try{d=JSON.parse(fs.readFileSync('${config_file}','utf8'));}catch(e){}const ks=process.env._JS_KEY.split('.');let o=d;for(let i=0;i<ks.length-1;i++){if(!o[ks[i]]||typeof o[ks[i]]!=='object')o[ks[i]]={};o=o[ks[i]];}let v=process.env._JS_VAL;try{v=JSON.parse(v);}catch(e){}o[ks[ks.length-1]]=v;fs.writeFileSync('${config_file}',JSON.stringify(d,null,2));" 2>/dev/null
 		done

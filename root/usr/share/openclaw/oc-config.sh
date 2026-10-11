@@ -2111,8 +2111,7 @@ reset_to_defaults() {
 				json_set gateway.port 18789 2>&1
 				json_set gateway.bind lan 2>&1
 				json_set gateway.mode local 2>&1
-				json_set gateway.controlUi.allowInsecureAuth true 2>&1
-				json_set gateway.controlUi.dangerouslyDisableDeviceAuth true 2>&1
+				# v1.0.7: 移除 allowInsecureAuth / dangerouslyDisableDeviceAuth (OpenClaw 2026.10.1+ 已废弃)
 				json_set gateway.controlUi.dangerouslyAllowHostHeaderOriginFallback true 2>&1
 				json_set gateway.tailscale.mode off 2>&1
 				echo -e "  ${GREEN}✅ 网关设置已恢复默认${NC}"
@@ -2288,8 +2287,7 @@ reset_to_defaults() {
 				json_set gateway.mode local
 				json_set gateway.auth.mode token
 				json_set gateway.auth.token "$new_token"
-				json_set gateway.controlUi.allowInsecureAuth true
-				json_set gateway.controlUi.dangerouslyDisableDeviceAuth true
+				# v1.0.7: 移除 allowInsecureAuth / dangerouslyDisableDeviceAuth (OpenClaw 2026.10.1+ 已废弃)
 				json_set gateway.controlUi.dangerouslyAllowHostHeaderOriginFallback true
 				json_set gateway.tailscale.mode off
 				json_set acp.dispatch.enabled false
