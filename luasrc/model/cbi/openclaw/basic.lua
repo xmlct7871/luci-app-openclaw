@@ -51,28 +51,42 @@ act.cfgvalue = function(self, section)
 	html[#html+1] = '<div style="background:#fff;border-radius:12px;padding:24px 28px;max-width:520px;width:92%;box-shadow:0 8px 32px rgba(0,0,0,0.2);">'
 	html[#html+1] = '<h3 style="margin:0 0 16px 0;font-size:16px;color:#333;">📦 选择安装版本</h3>'
 	html[#html+1] = '<div style="display:flex;flex-direction:column;gap:12px;">'
+	-- v1.0.10: 提前读 install_path,后面查询最新版 + UI 输入框都要用
+	local install_path = m.uci:get("openclaw", "main", "install_path")
+	if install_path == nil or install_path == "" then
+		install_path = "/root/.openclaw"
+	end
 	-- 稳定版选项
+	-- v1.0.10: 从 openclaw-env 读取 OC_DEFAULT_VERSION(v1.0.8 起的稳定版本号);
+	--   原 OC_TESTED_VERSION 在 v1.0.7 还在用,v1.0.8 重命名后这里没同步,sed 拿不到值。
+	local stable_ver = luci.sys.exec("sed -n 's/^OC_DEFAULT_VERSION=\"\\(.*\\)\"/\\1/p' /usr/bin/openclaw-env 2>/dev/null"):gsub("%s+", "")
+	if stable_ver == "" then stable_ver = "查询失败" end
+	-- 最新版选项 (npm view 查询,5s 超时,失败降级显示)
+	-- 用 install_path 下的 npm 避免污染宿主机 PATH;npm 未安装时静默降级
+	-- npm 脚本头部是 #!/usr/bin/env node,所以 PATH 必须包含 node 目录
+	local npm_bin = install_path .. "/node/bin/npm"
+	local latest_ver = luci.sys.exec(
+		"PATH=" .. install_path .. "/node/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin " ..
+		"timeout 5 " .. npm_bin .. " view openclaw version 2>/dev/null"
+	):gsub("%s+", "")
+	if latest_ver == "" then latest_ver = "查询失败" end
 	html[#html+1] = '<label style="display:flex;align-items:flex-start;gap:10px;padding:14px 16px;border:2px solid #4a90d9;border-radius:8px;cursor:pointer;background:#f0f7ff;" id="oc-opt-stable">'
 	html[#html+1] = '<input type="radio" name="oc-ver-choice" value="stable" checked style="margin-top:2px;">'
 	html[#html+1] = '<div><strong style="color:#333;">✅ 稳定版 (推荐)</strong>'
-	html[#html+1] = '<div style="font-size:12px;color:#666;margin-top:4px;">版本 v' .. luci.sys.exec("sed -n 's/^OC_TESTED_VERSION=\"\\(.*\\)\"/\\1/p' /usr/bin/openclaw-env 2>/dev/null"):gsub("%s+", "") .. '，已经过完整测试，兼容性良好。</div>'
+	html[#html+1] = '<div style="font-size:12px;color:#666;margin-top:4px;">版本 v' .. stable_ver .. '，已经过完整测试，兼容性良好。</div>'
 	html[#html+1] = '</div></label>'
 	-- 最新版选项
 	html[#html+1] = '<label style="display:flex;align-items:flex-start;gap:10px;padding:14px 16px;border:2px solid #e0e0e0;border-radius:8px;cursor:pointer;background:#fff;" id="oc-opt-latest">'
 	html[#html+1] = '<input type="radio" name="oc-ver-choice" value="latest" style="margin-top:2px;">'
 	html[#html+1] = '<div><strong style="color:#333;">🆕 最新版</strong>'
-	html[#html+1] = '<div style="font-size:12px;color:#e36209;margin-top:4px;">⚠️ 安装 npm 上的最新发布版本，可能存在未经验证的兼容性问题。</div>'
+	html[#html+1] = '<div style="font-size:12px;color:#e36209;margin-top:4px;">npm 当前版本 v' .. latest_ver .. '，可能存在未经验证的兼容性问题。</div>'
 	html[#html+1] = '</div></label>'
 	html[#html+1] = '</div>'
 	-- 自定义安装路径
 	html[#html+1] = '<div style="margin-top:16px;padding-top:14px;border-top:1px solid #eee;">'
 	html[#html+1] = '<div style="font-weight:600;font-size:13px;color:#333;margin-bottom:8px;">📂 安装路径</div>'
 	html[#html+1] = '<div style="display:flex;gap:8px;align-items:center;">'
-	-- 从 UCI 读 install_path,默认 /root/.openclaw (v3 扁平布局,匹配 upstream OpenClaw)
-	local install_path = m.uci:get("openclaw", "main", "install_path")
-	if install_path == nil or install_path == "" then
-		install_path = "/root/.openclaw"
-	end
+	-- install_path 已在前面读好 (版本选择 UI 用),这里直接复用
 	html[#html+1] = '<input type="text" id="oc-install-path" value="' .. install_path .. '" style="flex:1;padding:8px 12px;border:1px solid #d0d7de;border-radius:6px;font-size:13px;" placeholder="/root/.openclaw">'
 	html[#html+1] = '<button class="btn cbi-button" type="button" onclick="ocCheckInstallPath()" style="font-size:12px;padding:4px 10px;">检测空间</button>'
 	html[#html+1] = '</div>'

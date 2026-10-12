@@ -4,6 +4,30 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 
+## [1.0.10] - 2026-10-12
+
+### LuCI 安装版本选择对话框:同时显示稳定版与最新版
+
+v1.0.9 在 `openclaw-env` CLI 三处入口已经显示了稳定版 + 最新版,但
+LuCI 「📦 安装运行环境」弹窗里仍然显示空版本号 ——
+
+```
+✅ 稳定版 (推荐)
+   版本 v, 已经过完整测试，兼容性良好。
+🆕 最新版
+   ⚠️ 安装 npm 上的最新发布版本，可能存在未经验证的兼容性问题。
+```
+
+**根因**:`luasrc/model/cbi/openclaw/basic.lua:58` 用 `sed` 从
+`/usr/bin/openclaw-env` 提取版本号时,变量名是 `OC_TESTED_VERSION`(v1.0.7 沿用),
+但 v1.0.8 已改名为 `OC_DEFAULT_VERSION`,sed 拿不到值,UI 显示成空。
+
+**修复**:
+1. sed 变量名同步到 `OC_DEFAULT_VERSION`(稳定版正确显示 `v2026.10.1`)
+2. 最新版选项也加上 `npm view openclaw version` 查询,5 秒超时,失败降级显示「查询失败」
+
+最新版在 OpenClaw 未安装时(`npm` 不存在)静默降级,不影响页面渲染。
+
 ## [1.0.9] - 2026-10-12
 
 ### 关键修复:首次启动时后台 doctor 与 gateway 写锁竞争
