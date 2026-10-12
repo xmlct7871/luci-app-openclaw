@@ -449,6 +449,43 @@ fi
 	#   现在已经没有 openclaw 用户，root 自身读写不需要清空 /tmp/jiti。
 	# extensions / npm/projects 的兜底 chmod 仍在 L535-543 的尾段执行。
 
+	# v1.0.9: 等待上一次 doctor --fix 完成(防止与 gateway SQLite 写锁竞争)
+	# 背景: v1.0.8 把 doctor --fix 移到后台异步跑,网关启动不再被阻塞;
+	#   但后台 doctor 与 gateway 进程同时打开 SQLite 数据库,会触发
+	#   "CLI command failed" 错误 + procd crash-loop backoff。
+	# 修复: doctor 启动时把 PID 写到 ${OC_DATA}/.doctor.pid,
+	#   网关 start_service 时调用本函数,等到该 PID 自然退出(最多 180s)
+	#   再放行 procd 拉起 gateway。如果 180s 内 doctor 仍未结束,
+	#   记录告警继续启动网关,避免无限阻塞。
+	# 180s 阈值依据: 实测 doctor --fix 正常 50s 完成 + 留出 2 倍 buffer
+	#        + 网关 ready 时间约 30s(可与 doctor 收尾重叠一部分)。
+	_wait_for_prior_doctor() {
+		local pid_file="${OC_DATA}/.doctor.pid"
+		[ ! -f "$pid_file" ] && return 0
+		local doc_pid=""
+		doc_pid=$(cat "$pid_file" 2>/dev/null | head -1 | tr -d '[:space:]')
+		[ -z "$doc_pid" ] && { rm -f "$pid_file" 2>/dev/null; return 0; }
+		# 已死则清掉 marker 放行
+		if ! kill -0 "$doc_pid" 2>/dev/null; then
+			rm -f "$pid_file" 2>/dev/null
+			return 0
+		fi
+		local waited=0
+		logger -t openclaw "等待上一次 doctor --fix (PID $doc_pid) 完成,避免 SQLite 写锁竞争..."
+		while kill -0 "$doc_pid" 2>/dev/null; do
+			if [ $waited -ge 180 ]; then
+				logger -t openclaw "doctor 180s 内仍未完成,继续先启动网关 (doctor 仍在后台,会与 gateway 共享 SQLite 资源)"
+				return 0
+			fi
+			sleep 3
+			waited=$((waited + 3))
+		done
+		rm -f "$pid_file" 2>/dev/null
+		# v1.0.9: doctor 退出后,SQLite 锁立即释放不需要额外 sleep,
+		#   gateway 启动本身要 30-70s,这段时间内 doctor 的尾段 I/O 已彻底落盘。
+		logger -t openclaw "doctor --fix 已完成 (等待 ${waited}s),开始启动网关"
+	}
+
 	# v1.0.8: 直接清理 OpenClaw 已知废弃的 controlUi 字段 (不依赖 doctor --fix)
 	# 背景: 上游 OpenClaw 2026.10.1 移除了 allowInsecureAuth 和
 	#   dangerouslyDisableDeviceAuth,但保留了 dangerouslyAllowHostHeaderOriginFallback。
@@ -517,9 +554,13 @@ if (removed > 0) {
 						rm -f "$version_marker" 2>/dev/null
 						logger -t openclaw "doctor --fix 配置迁移失败 (后台),下次重试"
 					fi
+					# v1.0.9: 清理 doctor.pid 标记,_wait_for_prior_doctor 用它知道可以放行
+					rm -f "${OC_DATA}/.doctor.pid" 2>/dev/null
 				) &
 				DOCTOR_BG_PID=$!
 				disown 2>/dev/null
+				# v1.0.9: 把 doctor PID 写到 marker,网关 start_service 会等它完成再启动
+				echo "$DOCTOR_BG_PID" > "${OC_DATA}/.doctor.pid" 2>/dev/null
 				logger -t openclaw "doctor --fix 已在后台启动 (PID $DOCTOR_BG_PID),不阻塞网关"
 			fi
 		else
@@ -721,6 +762,11 @@ _ensure_port_free "$port"
 	done
 
 	procd_open_instance "gateway"
+	# v1.0.9: 如果后台 doctor 仍在跑,先等它结束再让 procd 拉起 gateway,
+	# 避免 SQLite 写锁竞争导致 gateway 启动失败 + procd crash-loop。
+	# procd_open_instance 只是注册,真正 fork 由 procd 在 start_service 返回后做,
+	# 所以这里等待期间 procd 还没动 gateway,doctor 结束时网关也即将启动。
+	_wait_for_prior_doctor
 	procd_set_param command "$NODE_BIN" "$oc_entry" gateway run \
 	--port "$port" --bind "$gw_bind"
 	# v2026.6.10: 显式设置 OpenClaw 上游 env var,避免 ~/.openclaw/ 解析歧义
@@ -735,8 +781,12 @@ _ensure_port_free "$port"
 	NODE_ICU_DATA="${NODE_BASE}/share/icu" \
 	NODE_BASE="$NODE_BASE" \
 	PATH="${NODE_BASE}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-	# v2026.6.10: 移除 procd_set_param user openclaw,以 root 跑(OpenWrt 惯例)
-	procd_set_param respawn 3600 10 5
+	# v1.0.9: 放宽 procd 重启阈值 —— 1 小时内 5 次崩溃 → 30 秒退避
+	# 原值 3600 10 5 过于激进:openclaw gateway 启动需 30-70 秒才能 bind 端口,
+	#   而后台 doctor --fix 同时也会写 SQLite/config,任何微抖动都会被
+	#   procd 误判为崩溃并快速重启,最终触发 crash-loop backoff,网关永远起不来。
+	#   新阈值给网关和 doctor 充分的初始化时间。
+	procd_set_param respawn 3600 5 30
 	procd_set_param stdout 1
 	procd_set_param stderr 1
 	procd_set_param pidfile /var/run/openclaw.pid

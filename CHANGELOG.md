@@ -4,6 +4,46 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 
+## [1.0.9] - 2026-10-12
+
+### 关键修复:首次启动时后台 doctor 与 gateway 写锁竞争
+
+v1.0.8 把 `doctor --fix` 移到后台跑,网关启动不再被阻塞;但实测发现后台
+doctor 与 `gateway run` 同时打开 SQLite 数据库 + 写入 `openclaw.json`,
+任一方微抖动都会被另一方误判为异常,触发 `CLI command failed` + procd
+crash-loop backoff,最终网关永远 bind 不上端口。
+
+三处配套修复:
+
+1. **doctor 启动时写 PID 到 `${OC_DATA}/.doctor.pid`** —— 后续 start_service
+   可以查到 doctor 是否还活着。
+2. **新增 `_wait_for_prior_doctor` 函数** —— 网关 start_service 注册前调用,
+   等待后台 doctor 自然退出(最多 90s)再放行 procd fork gateway,串行化
+   doctor → gateway 流程,从根上消除 SQLite 写锁竞争。
+3. **procd respawn 参数从 `3600 10 5` 放宽到 `3600 5 30`** —— 原值过于
+   激进,gateway 启动本身就需要 30-70 秒才能 bind 端口,任何抖动都会被
+   procd 误判崩溃并立刻重启,导致网关永远起不来。新阈值 1 小时内 5 次
+   崩溃才进入 30 秒退避,给网关和 doctor 充分初始化时间。
+
+### openclaw-env UI 升级:同时显示稳定版与最新版
+
+`install_openclaw` / setup banner / `do_upgrade` 三处入口现在都打印:
+
+```
+  稳定版 (默认):  v2026.10.1  ← 调试通过,可直接使用
+  最新版 (npm):   v2026.10.1  ← 包含最新功能,可能引入未测试 schema 变更
+```
+
+启动时调用 `npm view openclaw version` 探测最新版(10s 超时,失败降级
+显示 `(查询失败)`),用户可一眼看到两条升级路径,默认仍走稳定版,
+`OC_VERSION=latest` 切到最新版。
+
+### 完整修复链
+
+- v1.0.7 移除 init.d 中的废弃字段(已验证 EX_CONFIG 78 不再触发)
+- v1.0.8 加入同步直接清理 + doctor 后台化(已验证网关能起来,但有 race)
+- **v1.0.9 串行化 doctor 与 gateway**(本次)—— 彻底稳定
+
 ## [1.0.8] - 2026-10-12
 
 ### 关键修复:即使 doctor --fix 卡死,网关也能正常启动

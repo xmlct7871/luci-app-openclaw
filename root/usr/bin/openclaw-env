@@ -37,6 +37,16 @@ OC_NODE_MIN_VERSION="${OC_NODE_MIN_VERSION:-24.16.0}"
 OC_DEFAULT_VERSION="2026.10.1"
 OC_VERSION="${OC_VERSION:-}"
 
+# v1.0.9: 探测 npm 上的最新版本(用于安装/升级 UI 展示)
+# 失败时返回空字符串,调用方降级显示为"查询失败"
+_oc_query_latest_version() {
+	[ -x "$NPM_BIN" ] || return 1
+	timeout 10 "$NPM_BIN" view openclaw version 2>/dev/null | tr -d '[:space:]'
+}
+# 启动时预先探测一次,缓存到 OC_LATEST_VERSION
+OC_LATEST_VERSION="$(_oc_query_latest_version || true)"
+[ -z "$OC_LATEST_VERSION" ] && OC_LATEST_VERSION=""
+
 [ -r /usr/libexec/openclaw-paths.sh ] && . /usr/libexec/openclaw-paths.sh
 [ -r /usr/libexec/openclaw-node.sh ] && . /usr/libexec/openclaw-node.sh
 
@@ -615,6 +625,16 @@ install_openclaw() {
 	echo ""
 	echo "=== 安装 OpenClaw ==="
 
+	# v1.0.9: 同时显示调试通过的稳定版与 npm 最新版,方便用户决策
+	# 默认仍走稳定版;用户可用 OC_VERSION=latest / OC_VERSION=<x.y.z> 覆盖
+	local latest_label="(查询失败)"
+	if [ -n "$OC_LATEST_VERSION" ]; then
+		latest_label="v${OC_LATEST_VERSION}"
+	fi
+	echo "  稳定版 (默认):  v${OC_DEFAULT_VERSION}  ← 调试通过,可直接使用"
+	echo "  最新版 (npm):   ${latest_label}  ← 包含最新功能,可能引入未测试 schema 变更"
+	echo ""
+
 	# 确定安装版本
 	# 默认: openclaw@<OC_DEFAULT_VERSION> (调试通过的稳定版, 见上方注释)
 	# 显式 OC_VERSION=latest / OC_VERSION=stable 走 npm @latest
@@ -763,10 +783,16 @@ do_setup() {
 	echo ""
 	echo "  架构:       $(uname -m)"
 	echo "  Node 版本:  v${node_ver}"
+	# v1.0.9: 展示稳定版 + 最新版两个版本号,默认会装稳定版
 	if [ -n "$OC_VERSION" ] && [ "$OC_VERSION" != "latest" ]; then
 		echo "  OpenClaw:   v${OC_VERSION} (指定版本)"
 	else
-		echo "  OpenClaw:   npm latest (默认最新)"
+		local _latest_label="(查询失败)"
+		if [ -n "$OC_LATEST_VERSION" ]; then
+			_latest_label="v${OC_LATEST_VERSION}"
+		fi
+		echo "  稳定版:     v${OC_DEFAULT_VERSION}  ← 默认安装"
+		echo "  最新版:     ${_latest_label}  ← 用 OC_VERSION=latest 切换"
 	fi
 	echo "  安装路径:   ${OC_INSTALL_PATH}"
 	echo "  数据路径:   ${OC_INSTALL_PATH}"
@@ -861,6 +887,13 @@ do_upgrade() {
 
 	echo "  Node.js:     $($NODE_BIN --version 2>/dev/null)"
 	[ -n "$current_ver" ] && echo "  当前版本:    v${current_ver}"
+	# v1.0.9: 升级前展示稳定版 + 最新版,帮助用户决定走哪条路径
+	local _latest_label="(查询失败)"
+	if [ -n "$OC_LATEST_VERSION" ]; then
+		_latest_label="v${OC_LATEST_VERSION}"
+	fi
+	echo "  稳定版:      v${OC_DEFAULT_VERSION}  ← 默认目标"
+	echo "  最新版:      ${_latest_label}  ← 用 OC_VERSION=latest 切换"
 	echo ""
 
 	local libc_type
