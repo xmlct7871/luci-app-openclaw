@@ -1176,9 +1176,26 @@ function action_check_system()
 	end
 	result.disk_ok = result.disk_mb >= MIN_DISK_MB
 
-	-- 安装前写入探针：先在实际存在的父目录创建临时目录。
-	-- 这能明确识别 overlay 满、只读挂载、路径挂载点不可写等问题，避免下载完才失败。
-	local probe_dir = disk_check_path .. "/.openclaw-write-test-" .. tostring(os.time()) .. "-" .. tostring(math.random(1000, 9999))
+	-- v1.0.11: 安装前写入探针 — 先尝试在 install_path 自身,不存在就回退到最近的已存在父目录
+	-- 覆盖三种真实场景:
+	--   1) install_path 存在且可写   → 直接在它下面 mkdir 探针
+	--   2) install_path 不存在(首次安装),但父目录可写 → 在父目录 mkdir 探针
+	--   3) overlay 满 / 只读挂载    → 所有 mkdir 失败,writable_ok=false
+	local probe_dir
+	if nixio.fs.stat(install_path, "type") then
+		probe_dir = install_path .. "/.openclaw-write-test-" .. tostring(os.time()) .. "-" .. tostring(math.random(1000, 9999))
+	else
+		-- 找最近的已存在父目录
+		local parent = install_path
+		while parent ~= "/" and parent ~= "" do
+			parent = parent:match("^(.*)/[^/]*$") or "/"
+			if parent == "" then parent = "/" end
+			if nixio.fs.stat(parent, "type") then
+				break
+			end
+		end
+		probe_dir = parent .. "/.openclaw-write-test-" .. tostring(os.time()) .. "-" .. tostring(math.random(1000, 9999))
+	end
 	local probe_rc = os.execute("mkdir " .. shellquote(probe_dir) .. " >/dev/null 2>&1")
 	if probe_rc == 0 or probe_rc == true then
 		result.writable_ok = true

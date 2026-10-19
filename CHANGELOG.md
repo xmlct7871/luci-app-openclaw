@@ -4,6 +4,52 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 
+## [1.0.11] - 2026-10-19
+
+### 修复 LuCI 安装弹窗两处 UX Bug
+
+**Bug 1:「🆕 最新版」永远显示 `v查询失败`**
+
+`luasrc/model/cbi/openclaw/basic.lua:67` 之前固定用
+`install_path .. "/node/bin/npm"` 调 `npm view openclaw version`。
+但用户首次安装时,`/root/.openclaw/node/bin/npm` 根本不存在(还没下载 Node),
+命令报 `No such file or directory` → `latest_ver` 为空 → 显示「查询失败」。
+
+**修复**:三段式 fallback,在 shell 命令链里挑可用的 npm:
+
+```
+NPMLOCAL=install_path/node/bin/npm  ← OpenClaw 已装时优先
+NPMSYS=$(command -v npm)            ← 回退到系统 npm
+都没有 → 静默降级,无报错日志
+```
+
+效果:
+- 已装:走 install_path 下的 npm(尊重用户实际跑的版本)
+- 未装:走系统 npm(ImmortalWrt 通常没装,失败正常,降级显示)
+- 任何情况下都不会再出现 `npm: No such file or directory` 红色日志
+
+**Bug 2: 内存磁盘都 ✅,但点「开始安装」报「系统配置不满足要求」**
+
+`luasrc/controller/openclaw.lua:1191` 的 `result.pass` 是
+`memory_ok AND disk_ok AND writable_ok`,但 `basic.lua` 里的 JS
+**只渲染了 `memory_ok` 和 `disk_ok` 两个状态**,`writable_ok` 完全隐藏。
+用户看到两条 ✅ 直接被拒,完全不知道是「写入权限」那项挂了。
+
+**修复**:
+1. JS 现在完整显示三行(内存 / 磁盘 / **写入**),不再藏字段
+2. 失败时逐项列出「未通过项 + 修复建议」,而不是笼统说"请升级硬件":
+   ```
+   ❌ 系统配置不满足要求,安装已终止
+
+   未通过项:
+     • 安装路径不可写 (挂载点: /)
+
+   修复建议:
+     💡 写入权限: 通常是 overlay 已满 (运行 df -h 看根分区) 或挂载点只读...
+   ```
+3. `openclaw.lua` 的 writable 探针改为「先在 install_path 自身创建,
+   不存在再回退到最近的已存在父目录」,覆盖首次安装 + 升级安装两个场景
+
 ## [1.0.10] - 2026-10-12
 
 ### LuCI 安装版本选择对话框:同时显示稳定版与最新版

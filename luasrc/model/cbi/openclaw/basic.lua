@@ -61,13 +61,21 @@ act.cfgvalue = function(self, section)
 	--   原 OC_TESTED_VERSION 在 v1.0.7 还在用,v1.0.8 重命名后这里没同步,sed 拿不到值。
 	local stable_ver = luci.sys.exec("sed -n 's/^OC_DEFAULT_VERSION=\"\\(.*\\)\"/\\1/p' /usr/bin/openclaw-env 2>/dev/null"):gsub("%s+", "")
 	if stable_ver == "" then stable_ver = "查询失败" end
-	-- 最新版选项 (npm view 查询,5s 超时,失败降级显示)
-	-- 用 install_path 下的 npm 避免污染宿主机 PATH;npm 未安装时静默降级
-	-- npm 脚本头部是 #!/usr/bin/env node,所以 PATH 必须包含 node 目录
-	local npm_bin = install_path .. "/node/bin/npm"
+	-- v1.0.11: 最新版查询三段式 fallback
+	--   1) install_path 下的 npm (OpenClaw 已装场景,优先尊重用户实际跑的版本)
+	--   2) 系统 PATH 里的 npm (ImmortalWrt 通常没装,失败正常)
+	--   3) 都没有 → 静默降级显示「查询失败」,**不会**留下 "No such file or directory" 报错日志
+	-- 同时把整段判断放进 shell 命令链里执行,避免在 Lua 里拼多个 os.exec 字符串
 	local latest_ver = luci.sys.exec(
-		"PATH=" .. install_path .. "/node/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin " ..
-		"timeout 5 " .. npm_bin .. " view openclaw version 2>/dev/null"
+		"NPMLOCAL='" .. install_path .. "/node/bin/npm'; " ..
+		"NPMSYS=$(command -v npm 2>/dev/null); " ..
+		"NPMBIN=''; " ..
+		"if [ -x \"$NPMLOCAL\" ]; then NPMBIN=\"$NPMLOCAL\"; " ..
+		"elif [ -x \"$NPMSYS\" ]; then NPMBIN=\"$NPMSYS\"; fi; " ..
+		"if [ -n \"$NPMBIN\" ]; then " ..
+		"  PATH='" .. install_path .. "/node/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin' " ..
+		"  timeout 5 \"$NPMBIN\" view openclaw version 2>/dev/null; " ..
+		"fi"
 	):gsub("%s+", "")
 	if latest_ver == "" then latest_ver = "查询失败" end
 	html[#html+1] = '<label style="display:flex;align-items:flex-start;gap:10px;padding:14px 16px;border:2px solid #4a90d9;border-radius:8px;cursor:pointer;background:#f0f7ff;" id="oc-opt-stable">'
@@ -167,17 +175,30 @@ act.cfgvalue = function(self, section)
 	html[#html+1] = 'logEl.textContent+="安装路径: "+r.install_path+"\\n";'
 	html[#html+1] = 'logEl.textContent+="内存: "+r.memory_mb+" MB (需要 ≥ 1024 MB) — "+(r.memory_ok?"✅ 通过":"❌ 不达标")+"\\n";'
 	html[#html+1] = 'logEl.textContent+="磁盘: "+r.disk_mb+" MB 可用 (需要 ≥ 2048 MB) — "+(r.disk_ok?"✅ 通过":"❌ 不达标")+"\\n";'
+	-- v1.0.11: 把 writable_ok 也显示出来;之前只显示前两项,用户看不到写入权限失败的原因
+	html[#html+1] = 'logEl.textContent+="写入: "+(r.writable_ok?"✅ 可写 (挂载点: "+(r.disk_path||"/")+")":"❌ 挂载点不可写 (overlay 满/只读, 检测路径: "+(r.disk_path||"/")+")")+"\\n";'
 	html[#html+1] = 'logEl.textContent+="\\n";'
 	html[#html+1] = 'if(!r.pass){'
 	html[#html+1] = 'ocCloseSetupDialog();'
 	html[#html+1] = 'btn.disabled=false;btn.textContent="📦 安装运行环境";'
 	html[#html+1] = 'statusEl.innerHTML="<span style=\\"color:#cf222e;\\">❌ 系统配置不满足要求</span>";'
-	html[#html+1] = 'logEl.textContent+="❌ 系统配置不满足要求，安装已终止\\n";'
-	html[#html+1] = 'logEl.textContent+="💡 请升级硬件配置或清理磁盘空间后重试\\n";'
+	-- v1.0.11: 逐项列出失败原因 + 修复建议,而不是笼统说"请升级硬件"
+	html[#html+1] = 'var issueList=[];var fixList=[];'
+	html[#html+1] = 'if(!r.memory_ok){issueList.push("内存不足: 当前 "+r.memory_mb+" MB, 需要 ≥ 1024 MB");fixList.push("💡 内存: 路由至少需要 1GB 内存");}'
+	html[#html+1] = 'if(!r.disk_ok){issueList.push("磁盘空间不足: 当前 "+r.disk_mb+" MB 可用, 需要 ≥ 2048 MB (检测路径: "+(r.disk_path||"/")+")");fixList.push("💡 磁盘: 清理不需要的文件, 或改用外置硬盘 (修改上方「安装路径」)");}'
+	html[#html+1] = 'if(r.writable_ok===false){issueList.push("安装路径不可写 (挂载点: "+(r.disk_path||"/")+")");fixList.push("💡 写入权限: 通常是 overlay 已满 (运行 <code>df -h</code> 看根分区) 或挂载点只读;也可换一个安装路径");}'
+	html[#html+1] = 'logEl.textContent+="❌ 系统配置不满足要求,安装已终止\\n";'
+	html[#html+1] = 'logEl.textContent+="\\n未通过项:\\n";'
+	html[#html+1] = 'for(var i=0;i<issueList.length;i++){logEl.textContent+="  • "+issueList[i]+"\\n";}'
+	html[#html+1] = 'logEl.textContent+="\\n修复建议:\\n";'
+	html[#html+1] = 'for(var i=0;i<fixList.length;i++){logEl.textContent+="  "+fixList[i]+"\\n";}'
 	html[#html+1] = 'resultEl.style.display="block";'
+	html[#html+1] = 'var issueHtml=issueList.map(function(s){return "<li>"+s+"</li>";}).join("");'
+	html[#html+1] = 'var fixHtml=fixList.join("<br/>");'
 	html[#html+1] = 'resultEl.innerHTML="<div style=\\"border:1px solid #f5c6cb;background:#ffeef0;padding:12px 16px;border-radius:6px;\\">"+'
-	html[#html+1] = '"<strong style=\\"color:#cf222e;font-size:14px;\\">❌ 系统配置不满足要求</strong><br/>"+'
-	html[#html+1] = '"<div style=\\"margin-top:8px;font-size:12px;color:#666;\\">💡 请升级硬件配置或清理磁盘空间后重试。</div></div>";'
+	html[#html+1] = '"<strong style=\\"color:#cf222e;font-size:14px;\\">❌ 系统配置不满足要求</strong>"+'
+	html[#html+1] = '"<ul style=\\"margin:8px 0 0 18px;padding:0;font-size:12px;color:#666;line-height:1.8;\\">"+issueHtml+"</ul>"+'
+	html[#html+1] = '"<div style=\\"margin-top:8px;padding-top:8px;border-top:1px dashed #f5c6cb;font-size:12px;color:#666;line-height:1.8;\\">"+fixHtml+"</div></div>";'
 	html[#html+1] = 'return;'
 	html[#html+1] = '}'
 	html[#html+1] = 'statusEl.innerHTML="<span style=\\"color:#7aa2f7;\\">⏳ 安装进行中...</span>";'
