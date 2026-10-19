@@ -627,6 +627,12 @@ install_openclaw() {
 
 	# v1.0.9: 同时显示调试通过的稳定版与 npm 最新版,方便用户决策
 	# 默认仍走稳定版;用户可用 OC_VERSION=latest / OC_VERSION=<x.y.z> 覆盖
+	# v1.0.11 修复: Node 已下载完,NPM_BIN 已就绪,此时探测 npm latest 才有意义
+	#   (脚本开头的 _oc_query_latest_version 跑在 Node 之前,必然空,导致 banner 永远显示"查询失败")
+	if [ -z "$OC_LATEST_VERSION" ] && [ -x "$NPM_BIN" ]; then
+		OC_LATEST_VERSION="$(_oc_query_latest_version || true)"
+		[ -z "$OC_LATEST_VERSION" ] && OC_LATEST_VERSION=""
+	fi
 	local latest_label="(查询失败)"
 	if [ -n "$OC_LATEST_VERSION" ]; then
 		latest_label="v${OC_LATEST_VERSION}"
@@ -639,10 +645,12 @@ install_openclaw() {
 	# 默认: openclaw@<OC_DEFAULT_VERSION> (调试通过的稳定版, 见上方注释)
 	# 显式 OC_VERSION=latest / OC_VERSION=stable 走 npm @latest
 	# 显式 OC_VERSION=<x.y.z> 锁定具体版本
+	# v1.0.11 修复: 原条件 `&& [ "$OC_VERSION" != "latest" ]` 会把 latest 也踢到 else 分支
+	#   装 OC_DEFAULT_VERSION,导致"选最新版实际装 10.1"。现在 latest 显式映射到 @latest。
 	local oc_pkg="openclaw@${OC_DEFAULT_VERSION}"
-	if [ -n "$OC_VERSION" ] && [ "$OC_VERSION" != "latest" ]; then
-		if [ "$OC_VERSION" = "stable" ]; then
-			log_info "OC_VERSION=stable 等同 latest, 安装 npm latest 稳定标签版本"
+	if [ -n "$OC_VERSION" ]; then
+		if [ "$OC_VERSION" = "latest" ] || [ "$OC_VERSION" = "stable" ]; then
+			log_info "OC_VERSION=${OC_VERSION}, 安装 npm @latest"
 			oc_pkg="openclaw@latest"
 		else
 			oc_pkg="openclaw@${OC_VERSION}"
@@ -888,6 +896,11 @@ do_upgrade() {
 	echo "  Node.js:     $($NODE_BIN --version 2>/dev/null)"
 	[ -n "$current_ver" ] && echo "  当前版本:    v${current_ver}"
 	# v1.0.9: 升级前展示稳定版 + 最新版,帮助用户决定走哪条路径
+	# v1.0.11 修复: 升级时 Node 已装,重新探测 npm latest 拿到真实版本号
+	if [ -z "$OC_LATEST_VERSION" ] && [ -x "$NPM_BIN" ]; then
+		OC_LATEST_VERSION="$(_oc_query_latest_version || true)"
+		[ -z "$OC_LATEST_VERSION" ] && OC_LATEST_VERSION=""
+	fi
 	local _latest_label="(查询失败)"
 	if [ -n "$OC_LATEST_VERSION" ]; then
 		_latest_label="v${OC_LATEST_VERSION}"
@@ -904,9 +917,10 @@ do_upgrade() {
 	echo "=== 正在升级 OpenClaw ==="
 	echo ""
 	# v1.0.8: 升级默认走调试通过版本,除非显式 OC_VERSION=latest/stable/<x.y.z>
+	# v1.0.11 修复: 同 install_openclaw,latest 被原条件踢到默认分支,这里同样修
 	local target_pkg="openclaw@${OC_DEFAULT_VERSION}"
-	if [ -n "$OC_VERSION" ] && [ "$OC_VERSION" != "latest" ]; then
-		if [ "$OC_VERSION" = "stable" ]; then
+	if [ -n "$OC_VERSION" ]; then
+		if [ "$OC_VERSION" = "latest" ] || [ "$OC_VERSION" = "stable" ]; then
 			target_pkg="openclaw@latest"
 		else
 			target_pkg="openclaw@${OC_VERSION}"

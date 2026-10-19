@@ -4,6 +4,48 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 
+## [1.0.12] - 2026-10-19
+
+### 修复:「选最新版」实际装的还是 2026.10.1
+
+v1.0.11 修了弹窗显示和系统检测 UX,但**没修安装流程里更深的一处 bug** —
+用户报告「选最新版本还是装 10.1 版本」。经排查根因有两层:
+
+**1) controller 读错了变量名**
+
+`luasrc/controller/openclaw.lua:456` 稳定版分支用 `grep '^OC_TESTED_VERSION='`
+读版本号,但 v1.0.8 已经把这个变量重命名为 `OC_DEFAULT_VERSION`。
+grep 永远空 → `env_prefix = ""` → `OC_VERSION` 落到空 → 装 `OC_DEFAULT_VERSION=2026.10.1`。
+
+**修复**:`OC_TESTED_VERSION` → `OC_DEFAULT_VERSION`。
+
+**2) openclaw-env `latest` 被 `if` 条件吃掉了**
+
+`root/usr/bin/openclaw-env:643` 原本:
+```sh
+if [ -n "$OC_VERSION" ] && [ "$OC_VERSION" != "latest" ]; then
+    ...
+else
+    log_info "默认安装调试通过版本 v${OC_DEFAULT_VERSION} (稳定)"
+    oc_pkg="openclaw@${OC_DEFAULT_VERSION}"
+fi
+```
+
+`OC_VERSION=latest` 时第二个条件 false → **走 else 装 10.1**!
+注释明明写「OC_VERSION=latest 走 npm @latest」,但代码逻辑完全相反。
+
+**修复**:把 latest / stable 显式映射到 `openclaw@latest`,而不是被 if 条件排除掉。
+同样 bug 也存在于 `do_upgrade` 升级分支,一并修复。
+
+**3) banner 永远显示「(查询失败)」**
+
+`_oc_query_latest_version` 在脚本开头(行 47)探测 npm latest,
+但这时 Node 还没下载,`NPM_BIN` 不存在,必然空。
+banner 永远显示「最新版 (npm): (查询失败)」,即使安装流程后续 Node 已就绪。
+
+**修复**:`install_openclaw` 和 `do_upgrade` 各自入口处,Node 已就绪
+之后再探测一次 `npm view openclaw version`,拿到真实版本号填进 banner。
+
 ## [1.0.11] - 2026-10-19
 
 ### 修复 LuCI 安装弹窗两处 UX Bug

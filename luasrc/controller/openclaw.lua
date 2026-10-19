@@ -452,13 +452,16 @@ function action_service_ctl()
 		local install_path = http.formvalue("install_path") or ""
 		local env_prefix = ""
 		if version == "stable" then
-			-- 稳定版: 读取 openclaw-env 中定义的 OC_TESTED_VERSION
-			local tested_ver = sys.exec("grep '^OC_TESTED_VERSION=' /usr/bin/openclaw-env 2>/dev/null | cut -d'\"' -f2"):gsub("%s+", "")
+			-- 稳定版: 读取 openclaw-env 中定义的 OC_DEFAULT_VERSION
+			-- v1.0.8 重命名: OC_TESTED_VERSION → OC_DEFAULT_VERSION
+			-- v1.0.11 修复: 同步变量名,否则 grep 永远空,稳定版和最新版实际都装 OC_DEFAULT_VERSION
+			local tested_ver = sys.exec("grep '^OC_DEFAULT_VERSION=' /usr/bin/openclaw-env 2>/dev/null | cut -d'\"' -f2"):gsub("%s+", "")
 			if tested_ver ~= "" then
 				env_prefix = "OC_VERSION=" .. shellquote(tested_ver) .. " "
 			end
 		elseif version == "latest" then
-			env_prefix = "OC_VERSION='latest' "
+			-- 最新版: 设 OC_VERSION=latest,openclaw-env install_openclaw 会装 npm @latest
+			env_prefix = "OC_VERSION=latest "
 		elseif version ~= "" and version ~= "latest" then
 			-- 校验版本号格式 (仅允许数字、点、横线、字母)
 			if version:match("^[%d%.%-a-zA-Z]+$") then
