@@ -63,6 +63,44 @@ end
 -- v2026.6.10: 删除 ensure_openclaw_user() 函数
 -- 不再创建 openclaw Unix 用户,服务以 root 跑
 
+-- v1.0.13: 端口值净化 —— 端口必须是 1-65535 的纯数字。
+-- UCI 里的 port/pty_port 会被拼进 shell 执行,形如 "18789; rm -rf /" 的值
+-- 就是一个命令注入面。action_status / ensure_port_free 里原本已有各自的数字校验,
+-- 这里抽成公共函数,让卸载路径也复用同一套规则。
+local function sanitize_port(value, fallback)
+	local v = tostring(value or ""):gsub("^%s+", ""):gsub("%s+$", "")
+	if v:match("^%d+$") then
+		local n = tonumber(v)
+		if n and n >= 1 and n <= 65535 then return tostring(n) end
+	end
+	return fallback
+end
+
+-- v1.0.13: 列出位于 path 自身或其子目录下的挂载点
+-- rm -rf 会顺着 mount point 继续往下删,把被挂载的文件系统的内容一并清空
+-- (外置硬盘分区、docker 的 overlayfs、或 bind mount 的真实数据目录)。
+-- 卸载前必须先确认这些挂载点不存在。
+local function list_mounts_under(path)
+	local result = {}
+	local seen = {}
+	local f = io.open("/proc/mounts", "r")
+	if not f then return result end
+	for line in f:lines() do
+		local mp = line:match("^%S+%s+(%S+)%s+")
+		if mp and mp ~= "/" then
+			-- mount point 里的空格在 /proc/mounts 中被转义成 \040
+			mp = mp:gsub("\\040", " ")
+			-- 同一个挂载点可能在 /proc/mounts 里出现多次,去重
+			if not seen[mp] and (mp == path or mp:sub(1, #path + 1) == path .. "/") then
+				seen[mp] = true
+				result[#result + 1] = mp
+			end
+		end
+	end
+	f:close()
+	return result
+end
+
 local function find_wechat_plugin_dir(install_path)
 	-- v2026.6.10: 路径扁平化,无 /data/.openclaw/ 嵌套
 	local sys = require "luci.sys"
@@ -248,16 +286,14 @@ function action_status()
 	local sys = require "luci.sys"
 	local uci = require "luci.model.uci".cursor()
 
-	local port = uci:get("openclaw", "main", "port") or "18789"
-	local pty_port = uci:get("openclaw", "main", "pty_port") or "18793"
-	local enabled = uci:get("openclaw", "main", "enabled") or "0"
-
 	-- 使用 get_install_path 获取安装路径 (唯一来源: UCI 配置)
 	local install_path = get_install_path()
 
 	-- 验证端口值为纯数字，防止命令注入
-	if not port:match("^%d+$") then port = "18789" end
-	if not pty_port:match("^%d+$") then pty_port = "18793" end
+	-- v1.0.13: 改用公共的 sanitize_port(与卸载路径同一套规则)
+	local port = sanitize_port(uci:get("openclaw", "main", "port"), "18789")
+	local pty_port = sanitize_port(uci:get("openclaw", "main", "pty_port"), "18793")
+	local enabled = uci:get("openclaw", "main", "enabled") or "0"
 
 	local result = {
 		enabled = enabled,
@@ -628,17 +664,47 @@ function action_uninstall()
 		return
 	end
 	local q_install_path = shellquote(install_path)
+	local overlay_install_path = "/overlay/upper" .. install_path
+
+	-- v1.0.13: 挂载点保护(在停服务之前检查,避免半途而废)
+	--   rm -rf 会顺着 mount point 继续往下删,把被挂载的文件系统内容一起清空:
+	--     · 外置硬盘分区挂到 <install_path>/data → 整块硬盘被格式化级删除
+	--     · bind mount 挂到 <install_path>/xxx → 挂载源的真实数据被删
+	--   判定规则:
+	--     · install_path 自身是挂载点 → 交给后面的 umount 处理
+	--       (umount 之后露出的只是父文件系统上的挂载点目录,源数据不受影响)
+	--     · install_path 之下有嵌套挂载点 → 必然被 rm -rf 连带清空,直接中止卸载
+	local nested_mounts = {}
+	for _, m in ipairs(list_mounts_under(install_path)) do
+		if m ~= install_path then nested_mounts[#nested_mounts+1] = m end
+	end
+	for _, m in ipairs(list_mounts_under(overlay_install_path)) do
+		nested_mounts[#nested_mounts+1] = m
+	end
+	if #nested_mounts > 0 then
+		http.prepare_content("application/json")
+		http.write_json({
+			status = "error",
+			message = "安装路径下存在挂载点,已取消卸载(rm -rf 会连带清空被挂载的文件系统): " ..
+				table.concat(nested_mounts, ", ") .. "。请先 umount 这些挂载点,再重新卸载。"
+		})
+		return
+	end
 
 	-- 1. 停止服务 (通过 init.d 正常流程)
 	sys.exec("/etc/init.d/openclaw stop >/dev/null 2>&1")
-	
+
 	-- 2. 获取配置端口，确保在清理前端口对应的进程都被杀掉
-	local port = uci:get("openclaw", "main", "port") or "18789"
-	local pty_port = uci:get("openclaw", "main", "pty_port") or "18793"
-	
+	-- v1.0.13: 端口值必须净化 —— UCI 里的 port/pty_port 会拼进 shell 执行,
+	--   "18789; rm -rf /" 这种值就是命令注入。sanitize_port 强制 1-65535 纯数字,
+	--   非法值一律回退默认端口。
+	local port = sanitize_port(uci:get("openclaw", "main", "port"), "18789")
+	local pty_port = sanitize_port(uci:get("openclaw", "main", "pty_port"), "18793")
+
 	-- 3. 终极无感化清理僵尸进程
-	sys.exec("for p in " .. port .. " " .. pty_port .. "; do pid=$(netstat -tulnp 2>/dev/null | grep \":$p \" | awk '{print $7}' | cut -d'/' -f1); [ -n \"$pid\" ] && kill -9 \"$pid\" 2>/dev/null; done")
-	sys.exec("ss -tulnp 2>/dev/null | awk '/:" .. port .. " |:" .. pty_port .. " /{print $NF}' | awk -F',' '{print $2}' | awk -F'=' '{print $2}' | xargs -r kill -9 2>/dev/null")
+	--   shellquote 负责引号转义;值本身已被 sanitize_port 限制为纯数字。
+	sys.exec("for p in " .. shellquote(port) .. " " .. shellquote(pty_port) .. "; do pid=$(netstat -tulnp 2>/dev/null | grep \":$p \" | awk '{print $7}' | cut -d'/' -f1); [ -n \"$pid\" ] && kill -9 \"$pid\" 2>/dev/null; done")
+	sys.exec("ss -tulnp 2>/dev/null | awk -v a=" .. shellquote(":" .. port .. " ") .. " -v b=" .. shellquote(":" .. pty_port .. " ") .. " '$0 ~ a || $0 ~ b {print $NF}' | awk -F',' '{print $2}' | awk -F'=' '{print $2}' | xargs -r kill -9 2>/dev/null")
 	sys.exec("pgrep -f 'openclaw-gateway|web-pty.js|oc-config' 2>/dev/null | xargs -r kill -9 2>/dev/null")
 	-- v2026.6.10: 不再按 openclaw 用户过滤(用户不存在),改为按进程名匹配
 
@@ -647,12 +713,15 @@ function action_uninstall()
 	-- 设置 UCI enabled=0
 	sys.exec("uci set openclaw.main.enabled=0; uci commit openclaw 2>/dev/null")
 	-- 删除 Node.js + OpenClaw 运行环境 (包含所有插件: qqbot, 飞书等)
+	-- v1.0.13: 上面的挂载点检测已经保证 install_path 之下没有嵌套挂载点,
+	--   所以这里的 rm -rf 不会再顺着 mount point 删进别的文件系统。
+	--   install_path 自身若是挂载点,先 umount 再删 —— umount 后露出的只是
+	--   父文件系统上的挂载点目录,挂载源的真实数据不受影响。
         -- 尝试先解绑可能挂载的目录；失败不阻断后续删除。
         sys.exec("umount " .. q_install_path .. " 2>/dev/null || true")
         -- 删除 Node.js + OpenClaw 运行环境。不要通过全局提权绕过权限问题。
         sys.exec("rm -rf " .. q_install_path)
         -- OverlayFS 兼容: 只清理同一规范化路径在 upper 层的残留。
-	local overlay_install_path = "/overlay/upper" .. install_path
         sys.exec("[ -d " .. shellquote(overlay_install_path) .. " ] && rm -rf " .. shellquote(overlay_install_path) .. " 2>/dev/null || true")
 	-- 清理临时文件
 	sys.exec("rm -f /tmp/openclaw-setup.* /tmp/openclaw-update.log /tmp/openclaw-plugin-upgrade.* /var/run/openclaw*.pid")

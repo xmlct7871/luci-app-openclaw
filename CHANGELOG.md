@@ -4,6 +4,67 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 
+## [1.0.13] - 2026-10-20
+
+### 安全:「卸载环境」的挂载点保护
+
+审计「🗑️ 卸载环境」按钮(`action_uninstall`)时发现两个隐患。
+
+**隐患 1:`rm -rf` 会顺着挂载点删进别的文件系统**
+
+原代码只对 `install_path` 自身做了一次 `umount`,然后直接 `rm -rf`。
+但 `rm -rf` 在遇到目录里的挂载点时会**继续往下删**,把被挂载的文件系统内容一起清空:
+
+- 外置硬盘分区挂到 `<install_path>/data` → 整块硬盘被删
+- bind mount 挂到 `<install_path>/xxx` → 挂载源的真实数据被删
+
+**修复**:新增 `list_mounts_under(path)` 辅助函数,读 `/proc/mounts` 枚举位于
+`path` 自身或其子目录下的挂载点(自动去重,`\040` 空格转义还原)。
+卸载前检查:
+
+- `install_path` **自身**是挂载点 → 交给原有的 `umount` 处理(umount 后露出的
+  只是父文件系统上的挂载点目录,挂载源数据不受影响)
+- `install_path` **之下**有嵌套挂载点 → 必然被 `rm -rf` 连带清空,
+  **直接中止卸载**并返回可操作的错误信息(列出具体挂载点,提示先 `umount`)
+
+检测放在停服务之前 —— 发现挂载点时连服务都不停,不产生任何副作用。
+
+**隐患 2:UCI 端口值未转义 → 命令注入**
+
+`action_uninstall` 把 UCI 里的 `port` / `pty_port` 直接拼进 shell:
+
+```lua
+sys.exec("for p in " .. port .. " " .. pty_port .. "; do ...")
+```
+
+UCI 虽需 root 才能改,但 `port="18789; rm -rf /"` 这种值就是命令注入面。
+(`action_status` 和 `ensure_port_free` 里本来就有数字校验,唯独卸载路径漏了。)
+
+**修复**:抽出公共的 `sanitize_port(value, fallback)`,强制 1-65535 纯数字,
+非法值一律回退默认端口;同时给所有拼接处加 `shellquote`。
+`action_status` 也改用同一个函数,消除重复的校验逻辑。
+
+生成的实际命令(已验证):
+
+```sh
+for p in '18789' '18793'; do pid=$(netstat -tulnp ... grep ":$p " ...); ...; done
+ss -tulnp 2>/dev/null | awk -v a=':18789 ' -v b=':18793 ' '$0 ~ a || $0 ~ b {print $NF}' | ...
+```
+
+### 测试
+
+新增 `tests/` 目录,两个脚本都在路由器上(`lua5.1`)实跑通过:
+
+- `tests/uninstall-guard-test.lua` —— 语法检查 + 从**真实源文件**里抽取
+  `sanitize_port` / `list_mounts_under` 做单元测试(13 个端口用例 + 7 个挂载点探针)
+- `tests/uninstall-e2e-test.lua` —— stub 掉 `luci.http` / `luci.sys` / `uci`,
+  加载**真实的** controller 调用真实的 `action_uninstall()`。
+  因为 `sys.exec` 被替换成「只记录不执行」,测试期间 `rm -rf` 一条都不会真的跑。
+
+用例 A:install_path 下有嵌套挂载点 → 中止卸载,**0 条命令下发**
+用例 B:无嵌套挂载点 → 正常卸载路径,`rm -rf` 正常下发
+用例 C/D:port 注入串 → 被中和为默认端口 18789,命令已 shellquote
+
 ## [1.0.12] - 2026-10-19
 
 ### 修复:「选最新版」实际装的还是 2026.10.1
